@@ -1,0 +1,307 @@
+1. Tujuan Aplikasi
+
+Aplikasi ini berfungsi sebagai:
+
+Monitoring perangkat IoT mesin jahit
+
+Mencatat IoT rusak
+
+Mencatat instalasi baru
+
+Mempermudah teknisi mencari device bermasalah
+
+Bisa dipakai di HP & Web Browser
+
+2. Teknologi Stack
+Frontend
+
+Next.js (App Router)
+
+Tailwind CSS → UI cepat dan ringan
+
+Shadcn UI / Radix UI → komponen profesional
+
+PWA Support → install ke HP seperti aplikasi native
+
+ZXing / html5-qrcode → barcode scanning
+
+Backend / Database
+
+Firebase Authentication → login user
+
+Firestore → database realtime
+
+Firebase Storage → upload CSV & foto device
+
+Firebase Functions → logic import CSV, validasi data
+
+Optional Tambahan (Sangat Direkomendasikan)
+
+Sentry → error tracking
+
+Zustand / Redux Toolkit → state management
+
+React Query / Tanstack Query → caching data
+
+Cloud Scheduler → backup otomatis
+
+3. Struktur Halaman (Routing)
+/login
+/dashboard
+/repair
+/new-installation
+/device-list
+/import-csv
+/profile
+/admin
+
+4. Role User
+Teknisi
+
+Lihat list device
+
+Input repair
+
+Scan barcode
+
+Search device
+
+Supervisor
+
+Semua akses teknisi
+
+Export CSV
+
+Approve data
+
+Admin
+
+Manage user
+
+Manage factory & line
+
+Backup data
+
+5. Database Design (Firestore)
+Collection: devices
+id
+mcid
+mac_address
+factory
+line
+status (active / repair / broken)
+last_update
+created_at
+
+Collection: repairs
+id
+device_id
+mcid
+mac_address
+factory
+line
+date
+problem
+action
+technician_name
+photo_url
+status
+
+Collection: installations
+id
+mcid
+mac_address
+factory
+line
+date_install
+technician
+
+Collection: users
+id
+name
+email
+role
+factory_access
+
+6. Fitur Utama
+Dashboard
+
+Total IoT aktif
+
+Total rusak
+
+Total repair bulan ini
+
+Grafik per factory
+
+Grafik per line
+
+Repair IoT Page
+
+Field:
+
+MCID
+
+MAC Address
+
+Factory
+
+Line
+
+Date
+
+Problem
+
+Action
+
+Upload Foto
+
+Fitur:
+
+Import CSV
+
+Export CSV
+
+Search Engine
+
+Filter Factory
+
+Filter Line
+
+Filter Date
+
+Pagination
+
+New Installation Page
+
+Fitur penting:
+
+Barcode Scanner MCID
+
+Barcode Scanner MAC Address
+
+Factory manual
+
+Line manual
+
+Auto timestamp
+
+Validasi duplikat device
+
+Library scan:
+
+html5-qrcode
+
+react-qr-barcode-scanner
+
+7. Search Engine Logic
+
+Gunakan Firestore Index:
+
+Search berdasarkan:
+
+MCID
+
+MAC Address
+
+Factory
+
+Line
+
+Status
+
+Tambahkan Debounce 300ms supaya ringan.
+
+8. CSV Import Flow
+
+Upload CSV
+
+Parse file (PapaParse)
+
+Validasi kolom
+
+Preview data
+
+Save ke Firestore
+
+Log history import
+
+9. UI/UX Design Concept
+
+Tema:
+
+Dark Industrial
+
+Warna Biru / Oranye
+
+Font tegas
+
+Mobile Friendly:
+
+Bottom Navbar
+
+Floating Scan Button
+
+Swipe Card Device
+
+10. Security Rules Firebase
+
+Teknisi hanya lihat factory miliknya
+
+Supervisor bisa edit
+
+Admin full access
+
+Validasi field tidak boleh kosong
+
+Limit write per menit (anti spam)
+
+11. Fitur Tambahan yang Sangat Disarankan 🔥
+1. Notifikasi
+
+Email / Push Notification
+
+Jika device status = broken
+
+2. History Device
+
+Riwayat repair per device
+
+3. QR Label Generator
+
+Cetak QR untuk device baru
+
+4. Offline Mode
+
+IndexedDB Cache
+
+Sync saat online
+
+5. SLA Timer
+
+Hitung lama perbaikan
+
+6. Photo Evidence
+
+Before / After Repair
+
+7. Audit Log
+
+Siapa edit apa dan kapan
+
+8. Heatmap Factory
+
+Area mesin paling sering rusak
+
+12. Struktur Folder Next.js
+/app
+  /dashboard
+  /repair
+  /installation
+  /devices
+/components
+/lib
+/services
+/hooks
+/types
+/utils

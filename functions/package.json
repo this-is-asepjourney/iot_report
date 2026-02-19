@@ -1,0 +1,13 @@
+{
+  "name": "iot-report-functions",
+  "description": "Firebase Cloud Functions for IoT Report (Telegram webhook)",
+  "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0"
+  }
+}

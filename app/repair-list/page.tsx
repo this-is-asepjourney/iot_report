@@ -13,7 +13,7 @@ import { Repair } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { debounce } from '@/lib/utils';
 import Link from 'next/link';
-import { Search, CheckCircle2, Clock, AlertCircle, Download, Upload, PlusCircle } from 'lucide-react';
+import { Search, CheckCircle2, Clock, AlertCircle, Download, Upload, PlusCircle, Pencil } from 'lucide-react';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { exportRepairsToCSV } from '@/utils/csvExport';
@@ -74,6 +74,9 @@ export default function RepairListPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [updatingRepairId, setUpdatingRepairId] = useState<string | null>(null);
+  const [editingRepair, setEditingRepair] = useState<Repair | null>(null);
+  const [editForm, setEditForm] = useState<Partial<Repair>>({});
+  const [savingEdit, setSavingEdit] = useState(false);
   const [factoryOptions, setFactoryOptions] = useState<string[]>([]);
   const [lineOptions, setLineOptions] = useState<string[]>([]);
 
@@ -171,6 +174,55 @@ export default function RepairListPage() {
 
   const doneCount = repairs.filter(r => r.status === 'completed' || r.status === 'approved').length;
   const belumCount = repairs.filter(r => r.status === 'pending').length;
+
+  const openEdit = (repair: Repair) => {
+    setEditingRepair(repair);
+    setEditForm({
+      problem: repair.problem || '',
+      action: repair.action || '',
+      mac_address: repair.mac_address || '',
+      factory: repair.factory || '',
+      line: repair.line || '',
+      date: repair.date,
+      status: repair.status,
+      technician_name: repair.technician_name || '',
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingRepair) return;
+    setSavingEdit(true);
+    try {
+      const newStatus = editForm.status ?? editingRepair.status;
+      const updates: Partial<Repair> = {
+        problem: editForm.problem ?? editingRepair.problem,
+        action: editForm.action ?? editingRepair.action,
+        mac_address: editForm.mac_address ?? editingRepair.mac_address,
+        factory: (editForm.factory ?? editingRepair.factory).trim(),
+        line: (editForm.line ?? editingRepair.line).trim(),
+        status: newStatus,
+        technician_name: (editForm.technician_name ?? editingRepair.technician_name) || '',
+      };
+      const dateVal = editForm.date ?? editingRepair.date;
+      if (dateVal) updates.date = dateVal instanceof Date ? dateVal : new Date(dateVal as unknown as string);
+      await updateRepair(editingRepair.id, updates);
+      // Sinkronkan status device: completed/approved → active, pending → repair
+      const deviceStatus = newStatus === 'completed' || newStatus === 'approved' ? 'active' : 'repair';
+      await updateDeviceStatus(editingRepair.device_id, deviceStatus);
+      toast({ title: 'Berhasil', description: 'Data repair telah diperbarui.' });
+      setEditingRepair(null);
+      setEditForm({});
+      loadRepairs();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Gagal menyimpan perubahan',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   const handleToggleDoneBelum = async (repair: Repair) => {
     const isDone = repair.status === 'completed' || repair.status === 'approved';
@@ -503,26 +555,145 @@ export default function RepairListPage() {
                       <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
                         <span className="text-xs text-muted-foreground">Teknisi: {repair.technician_name || '—'}</span>
                         <span className="text-xs text-muted-foreground">{format(repair.createdAt || repair.date, 'dd/MM/yy HH:mm')}</span>
-                        <Button
-                          size="sm"
-                          variant={repair.status === 'completed' || repair.status === 'approved' ? 'outline' : 'default'}
-                          onClick={() => handleToggleDoneBelum(repair)}
-                          disabled={updatingRepairId === repair.id}
-                          className="w-full sm:w-auto min-w-[80px]"
-                        >
-                          {updatingRepairId === repair.id ? (
-                            <span className="animate-pulse">...</span>
-                          ) : repair.status === 'completed' || repair.status === 'approved' ? (
-                            'Belum'
-                          ) : (
-                            'Done'
-                          )}
-                        </Button>
+                        <div className="flex gap-2 w-full sm:w-auto">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEdit(repair)}
+                            className="min-w-[72px]"
+                          >
+                            <Pencil className="h-3.5 w-3.5 mr-1 sm:mr-1.5" />
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={repair.status === 'completed' || repair.status === 'approved' ? 'outline' : 'default'}
+                            onClick={() => handleToggleDoneBelum(repair)}
+                            disabled={updatingRepairId === repair.id}
+                            className="min-w-[80px]"
+                          >
+                            {updatingRepairId === repair.id ? (
+                              <span className="animate-pulse">...</span>
+                            ) : repair.status === 'completed' || repair.status === 'approved' ? (
+                              'Belum'
+                            ) : (
+                              'Done'
+                            )}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </CardContent>
                 </Card>
               ))}
+            </div>
+          )}
+
+          {/* Edit Repair Dialog */}
+          {editingRepair && (
+            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+              <Card className="w-full max-w-lg border-2 shadow-lg my-4">
+                <CardHeader className="border-b">
+                  <CardTitle>Edit Repair — {editingRepair.mcid}</CardTitle>
+                  <p className="text-sm text-muted-foreground mt-1">Ubah data tiket perbaikan</p>
+                </CardHeader>
+                <CardContent className="pt-6 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Factory</Label>
+                      <Input
+                        value={editForm.factory ?? ''}
+                        onChange={(e) => setEditForm((f) => ({ ...f, factory: e.target.value }))}
+                        placeholder="Factory"
+                      />
+                    </div>
+                    <div>
+                      <Label>Line</Label>
+                      <Input
+                        value={editForm.line ?? ''}
+                        onChange={(e) => setEditForm((f) => ({ ...f, line: e.target.value }))}
+                        placeholder="Line"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>MAC Address (opsional)</Label>
+                    <Input
+                      value={editForm.mac_address ?? ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, mac_address: e.target.value }))}
+                      placeholder="MAC Address"
+                    />
+                  </div>
+                  <div>
+                    <Label>Tanggal</Label>
+                    <Input
+                      type="date"
+                      value={editForm.date
+                        ? (editForm.date instanceof Date
+                          ? editForm.date.toISOString().split('T')[0]
+                          : String(editForm.date).slice(0, 10))
+                        : ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, date: new Date(e.target.value) }))}
+                    />
+                  </div>
+                  <div>
+                    <Label>Problem</Label>
+                    <Input
+                      value={editForm.problem ?? ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, problem: e.target.value }))}
+                      placeholder="Deskripsi masalah"
+                    />
+                  </div>
+                  <div>
+                    <Label>Action</Label>
+                    <Input
+                      value={editForm.action ?? ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, action: e.target.value }))}
+                      placeholder="Tindakan yang dilakukan"
+                    />
+                  </div>
+                  <div>
+                    <Label>Teknisi</Label>
+                    <Input
+                      value={editForm.technician_name ?? ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, technician_name: e.target.value }))}
+                      placeholder="Nama teknisi"
+                    />
+                  </div>
+                  <div>
+                    <Label>Status</Label>
+                    <Select
+                      value={editForm.status ?? editingRepair.status}
+                      onValueChange={(v: Repair['status']) => setEditForm((f) => ({ ...f, status: v }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                        <SelectItem value="approved">Approved</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <Button onClick={handleSaveEdit} disabled={savingEdit} className="flex-1">
+                      {savingEdit ? 'Menyimpan...' : 'Simpan'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setEditingRepair(null);
+                        setEditForm({});
+                      }}
+                      disabled={savingEdit}
+                    >
+                      Batal
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           )}
 

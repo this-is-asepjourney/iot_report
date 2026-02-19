@@ -6,30 +6,24 @@
     "indexes": "firestore.indexes.json"
   },
   "hosting": {
-    "public": "public",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
+    "public": "out",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {"source": "/admin", "destination": "/admin.html"},
+      {"source": "/dashboard", "destination": "/dashboard.html"},
+      {"source": "/device-list", "destination": "/device-list.html"},
+      {"source": "/import-csv", "destination": "/import-csv.html"},
+      {"source": "/login", "destination": "/login.html"},
+      {"source": "/new-installation", "destination": "/new-installation.html"},
+      {"source": "/profile", "destination": "/profile.html"},
+      {"source": "/repair", "destination": "/repair.html"},
+      {"source": "/repair-list", "destination": "/repair-list.html"},
+      {"source": "/404", "destination": "/404.html"}
     ]
   },
   "functions": [
-    {
-      "codebase": "default",
-      "source": "functions"
-    },
-    {
-      "source": "noname",
-      "codebase": "noname",
-      "disallowLegacyRuntimeConfig": true,
-      "ignore": [
-        "node_modules",
-        ".git",
-        "firebase-debug.log",
-        "firebase-debug.*.log",
-        "*.local"
-      ]
-    }
+    {"codebase": "default", "source": "functions"},
+    {"source": "noname", "codebase": "noname", "disallowLegacyRuntimeConfig": true, "ignore": ["node_modules", ".git", "firebase-debug.log", "firebase-debug.*.log", "*.local"]}
   ],
   "auth": {
     "providers": {

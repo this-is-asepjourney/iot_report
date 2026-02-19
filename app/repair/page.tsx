@@ -10,7 +10,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { createRepair } from '@/services/repairService';
-import { getDeviceByMCID, updateDeviceStatus } from '@/services/deviceService';
+import {
+  getDeviceByMCID,
+  updateDeviceStatus,
+  createDeviceIfNotExists,
+} from '@/services/deviceService';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/components/ui/use-toast';
 import { Search, List } from 'lucide-react';
@@ -29,32 +33,28 @@ export default function RepairPage() {
         action: '',
     });
     const [loading, setLoading] = useState(false);
-    const [deviceFound, setDeviceFound] = useState(false);
 
+    /** Opsional: isi otomatis factory/line/mac jika MCID sudah terdaftar. */
     const handleMCIDSearch = async () => {
-        if (!formData.mcid) return;
-
+        if (!formData.mcid.trim()) return;
         try {
-            const device = await getDeviceByMCID(formData.mcid);
+            const device = await getDeviceByMCID(formData.mcid.trim());
             if (device) {
-                setFormData((prev: typeof formData) => ({
+                setFormData((prev) => ({
                     ...prev,
-                    mac_address: device.mac_address,
-                    factory: device.factory,
-                    line: device.line,
+                    mac_address: device.mac_address || prev.mac_address,
+                    factory: device.factory || prev.factory,
+                    line: device.line || prev.line,
                 }));
-                setDeviceFound(true);
                 toast({
                     title: 'Device ditemukan',
-                    description: 'Data device berhasil dimuat',
+                    description: 'Data device dimuat. Bisa diedit bila perlu.',
                 });
             } else {
                 toast({
-                    title: 'Device tidak ditemukan',
-                    description: 'MCID tidak terdaftar',
-                    variant: 'destructive',
+                    title: 'MCID belum terdaftar',
+                    description: 'Langsung isi form dan simpan—device akan otomatis ditambahkan ke Device List.',
                 });
-                setDeviceFound(false);
             }
         } catch (error) {
             toast({
@@ -70,47 +70,62 @@ export default function RepairPage() {
         setLoading(true);
 
         try {
-            const device = await getDeviceByMCID(formData.mcid);
-            if (device) {
-                await createRepair({
-                    device_id: device.id,
-                    mcid: formData.mcid,
-                    mac_address: formData.mac_address,
-                    factory: formData.factory,
-                    line: formData.line,
-                    date: new Date(formData.date),
-                    problem: formData.problem || '',
-                    action: formData.action || '',
-                    technician_name: user?.name || user?.email || '',
-                    status: 'pending',
-                });
-
-                await updateDeviceStatus(device.id, 'repair');
-
+            const mcid = formData.mcid.trim();
+            const factory = formData.factory.trim();
+            const line = formData.line.trim();
+            if (!mcid || !factory || !line) {
                 toast({
-                    title: 'Berhasil',
-                    description: 'Repair ditambahkan ke List IoT Error. Dialihkan ke list.',
-                });
-
-                setFormData({
-                    mcid: '',
-                    mac_address: '',
-                    factory: '',
-                    line: '',
-                    date: new Date().toISOString().split('T')[0],
-                    problem: '',
-                    action: '',
-                });
-                setDeviceFound(false);
-
-                router.push('/repair-list');
-            } else {
-                toast({
-                    title: 'Error',
-                    description: 'Device tidak ditemukan',
+                    title: 'Data wajib kurang',
+                    description: 'MCID, Factory, dan Line harus diisi.',
                     variant: 'destructive',
                 });
+                setLoading(false);
+                return;
             }
+
+            // Device jadi sumber dari repair: kalau belum ada, buat dulu dari data form
+            const now = new Date();
+            const { id: deviceId } = await createDeviceIfNotExists({
+                mcid,
+                mac_address: formData.mac_address?.trim() || '',
+                factory,
+                line,
+                status: 'active',
+                last_update: now,
+                created_at: now,
+            });
+
+            await createRepair({
+                device_id: deviceId,
+                mcid,
+                mac_address: formData.mac_address?.trim() || '',
+                factory,
+                line,
+                date: new Date(formData.date),
+                problem: formData.problem || '',
+                action: formData.action || '',
+                technician_name: user?.name || user?.email || '',
+                status: 'pending',
+            });
+
+            await updateDeviceStatus(deviceId, 'repair');
+
+            toast({
+                title: 'Berhasil',
+                description: 'Repair ditambahkan. Device otomatis tercatat di Device List bila baru.',
+            });
+
+            setFormData({
+                mcid: '',
+                mac_address: '',
+                factory: '',
+                line: '',
+                date: new Date().toISOString().split('T')[0],
+                problem: '',
+                action: '',
+            });
+
+            router.push('/repair-list');
         } catch (error: any) {
             toast({
                 title: 'Error',
@@ -132,7 +147,7 @@ export default function RepairPage() {
                             Input Repair
                         </h1>
                         <p className="text-muted-foreground">
-                            Tambah entry ke List IoT Error. Setelah simpan, data muncul di List Error dan bisa ditindak lanjuti (Done) di sana.
+                            Input repair adalah sumber data: isi MCID, Factory, Line (dan opsional MAC). Jika MCID belum ada, device otomatis ditambahkan ke Device List lalu repair dicatat.
                         </p>
                     </div>
 
@@ -154,7 +169,7 @@ export default function RepairPage() {
                                         />
                                     </div>
                                     <div className="flex items-end">
-                                        <Button type="button" onClick={handleMCIDSearch} variant="outline">
+                                        <Button type="button" onClick={handleMCIDSearch} variant="outline" title="Isi otomatis jika MCID sudah terdaftar">
                                             <Search className="h-4 w-4 mr-2" />
                                             Cari
                                         </Button>
@@ -163,13 +178,12 @@ export default function RepairPage() {
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
-                                        <Label htmlFor="mac_address">MAC Address</Label>
+                                        <Label htmlFor="mac_address">MAC Address (opsional)</Label>
                                         <Input
                                             id="mac_address"
                                             value={formData.mac_address}
                                             onChange={(e) => setFormData({ ...formData, mac_address: e.target.value })}
-                                            required
-                                            disabled={deviceFound}
+                                            placeholder="Kosongkan jika tidak ada"
                                         />
                                     </div>
 
@@ -180,7 +194,7 @@ export default function RepairPage() {
                                             value={formData.factory}
                                             onChange={(e) => setFormData({ ...formData, factory: e.target.value })}
                                             required
-                                            disabled={deviceFound}
+                                            placeholder="Nama pabrik/lokasi"
                                         />
                                     </div>
 
@@ -191,7 +205,7 @@ export default function RepairPage() {
                                             value={formData.line}
                                             onChange={(e) => setFormData({ ...formData, line: e.target.value })}
                                             required
-                                            disabled={deviceFound}
+                                            placeholder="Line produksi"
                                         />
                                     </div>
 

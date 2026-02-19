@@ -9,6 +9,10 @@ export const metadata: Metadata = {
   title: "IoT Report - Monitoring Mesin Jahit",
   description: "Aplikasi monitoring perangkat IoT mesin jahit",
   manifest: "/manifest.json",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/favicon.png",
+  },
 };
 
 export const viewport: Viewport = {

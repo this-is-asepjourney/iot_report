@@ -67,10 +67,12 @@ Aplikasi monitoring perangkat IoT mesin jahit dengan fitur repair tracking, new 
    rules_version = '2';
    service cloud.firestore {
      match /databases/{database}/documents {
-       // Users can read their own data
+       // Users: read/write own doc; admin bisa baca & edit semua user (untuk Admin Panel)
        match /users/{userId} {
-         allow read: if request.auth != null && request.auth.uid == userId;
-         allow write: if request.auth != null && request.auth.uid == userId;
+         allow read, write: if request.auth != null && (
+           request.auth.uid == userId ||
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+         );
        }
        
        // Devices - role-based access

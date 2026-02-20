@@ -10,9 +10,9 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/use-toast';
-import { Users, Building2, Database, Download, Pencil, X, Check } from 'lucide-react';
+import { Users, Building2, Database, Download, Pencil, X, Check, Trash2 } from 'lucide-react';
 import { getAllUsers, updateUser } from '@/services/userService';
-import { getDistinctFactories, getDistinctLines } from '@/services/deviceService';
+import { getDistinctFactories, getDistinctLines, removeDuplicateDevices, type DedupeProgress } from '@/services/deviceService';
 import { exportBackupJson, downloadBlob } from '@/utils/backupExport';
 import { User, UserRole } from '@/types';
 
@@ -29,6 +29,13 @@ export default function AdminPage() {
   const [factoryLineLoading, setFactoryLineLoading] = useState(true);
 
   const [backupLoading, setBackupLoading] = useState(false);
+  const [dedupeLoading, setDedupeLoading] = useState(false);
+  const [dedupeResult, setDedupeResult] = useState<{
+    duplicateCount: number;
+    removedCount: number;
+    repairsReassigned: number;
+  } | null>(null);
+  const [dedupeProgress, setDedupeProgress] = useState<DedupeProgress | null>(null);
 
   useEffect(() => {
     loadUsers();
@@ -109,6 +116,37 @@ export default function AdminPage() {
       toast({ title: 'Error', description: 'Gagal membuat backup', variant: 'destructive' });
     } finally {
       setBackupLoading(false);
+    }
+  };
+
+  const handleRemoveDuplicates = async () => {
+    setDedupeLoading(true);
+    setDedupeResult(null);
+    setDedupeProgress(null);
+    try {
+      const result = await removeDuplicateDevices((p) => setDedupeProgress(p));
+      setDedupeResult(result);
+      setDedupeProgress(null);
+      if (result.removedCount > 0) {
+        toast({
+          title: 'Duplikat dihapus',
+          description: `${result.removedCount} device duplikat dihapus. ${result.repairsReassigned} repair dialihkan ke device yang dipertahankan.`,
+        });
+      } else {
+        toast({
+          title: 'Tidak ada duplikat',
+          description: 'Tidak ditemukan device dengan MCID ganda.',
+        });
+      }
+    } catch (e) {
+      toast({
+        title: 'Error',
+        description: e instanceof Error ? e.message : 'Gagal menghapus duplikat device',
+        variant: 'destructive',
+      });
+    } finally {
+      setDedupeLoading(false);
+      setDedupeProgress(null);
     }
   };
 
@@ -242,6 +280,66 @@ export default function AdminPage() {
                       </CardContent>
                     </Card>
                   ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Hapus Duplikat Device — hanya admin */}
+          <Card className="mb-8 border-2 border-amber-500/30">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-amber-600" />
+                Hapus Duplikat Device
+              </CardTitle>
+              <CardDescription>
+                Jika total IoT membludak karena MCID sama terdaftar lebih dari satu kali, jalankan ini. Satu MCID = satu device. Yang dipertahankan: device dengan tanggal dibuat paling lama. Device duplikat akan dihapus; repair yang mengacu ke device yang dihapus akan dialihkan ke device yang dipertahankan.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button
+                variant="destructive"
+                onClick={handleRemoveDuplicates}
+                disabled={dedupeLoading}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                {dedupeLoading ? 'Memproses...' : 'Hapus Duplikat Device'}
+              </Button>
+              {dedupeProgress && (
+                <div className="rounded-lg border bg-muted/50 p-4 space-y-3">
+                  <p className="text-sm font-medium">{dedupeProgress.message}</p>
+                  {dedupeProgress.total != null && dedupeProgress.total > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>
+                          MCID duplikat: {dedupeProgress.current ?? 0} / {dedupeProgress.total}
+                        </span>
+                        {(dedupeProgress.removedSoFar != null || dedupeProgress.repairsReassignedSoFar != null) && (
+                          <span>
+                            Device dihapus: {dedupeProgress.removedSoFar ?? 0}
+                            {dedupeProgress.repairsReassignedSoFar != null &&
+                              ` · Repair dialihkan: ${dedupeProgress.repairsReassignedSoFar}`}
+                          </span>
+                        )}
+                      </div>
+                      <div className="h-2 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500 transition-all duration-300"
+                          style={{
+                            width: `${((dedupeProgress.current ?? 0) / dedupeProgress.total) * 100}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {dedupeResult && (
+                <div className="text-sm rounded-lg border bg-muted/50 p-4 space-y-1">
+                  <p className="font-medium">Hasil:</p>
+                  <p>MCID dengan duplikat: {dedupeResult.duplicateCount}</p>
+                  <p>Device yang dihapus: {dedupeResult.removedCount}</p>
+                  <p>Repair yang dialihkan: {dedupeResult.repairsReassigned}</p>
                 </div>
               )}
             </CardContent>

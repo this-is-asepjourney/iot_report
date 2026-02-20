@@ -8,7 +8,7 @@ export interface ImportErrorRow {
   mac_address: string;
   factory: string;
   line: string;
-  status: 'Berhasil' | 'Gagal';
+  status: 'Berhasil' | 'Gagal' | 'Dilewati';
   keterangan: string;
 }
 

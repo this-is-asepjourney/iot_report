@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { Navbar } from '@/components/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { getRepairs } from '@/services/repairService';
+import { getRepairs, getRepairsCount, getDistinctFactoriesFromRepairs, getDistinctLinesFromRepairs, type RepairStatusFilter } from '@/services/repairService';
 import { Repair } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { debounce } from '@/lib/utils';
@@ -21,7 +23,7 @@ import { downloadRepairCSVTemplate } from '@/utils/csvRepairTemplate';
 import { useToast } from '@/components/ui/use-toast';
 import Papa from 'papaparse';
 import { createRepair, updateRepair } from '@/services/repairService';
-import { getDeviceByMCID, createDevice, updateDeviceStatus, getDistinctFactories, getDistinctLines } from '@/services/deviceService';
+import { getDeviceByMCID, createDevice, updateDeviceStatus } from '@/services/deviceService';
 
 /** Kolom wajib saat import repair. problem & action opsional (bisa diisi nanti di web app). */
 const REPAIR_KOLOM_WAJIB = ['mcid', 'factory', 'line'] as const;
@@ -60,7 +62,8 @@ function isRowEmpty(row: RepairCSVRow): boolean {
   return !(row.mcid?.trim() || row.factory?.trim() || row.line?.trim());
 }
 
-export default function RepairListPage() {
+function RepairListContent() {
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const { toast } = useToast();
   const [repairs, setRepairs] = useState<Repair[]>([]);
@@ -79,71 +82,125 @@ export default function RepairListPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [factoryOptions, setFactoryOptions] = useState<string[]>([]);
   const [lineOptions, setLineOptions] = useState<string[]>([]);
+  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageCursors, setPageCursors] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [totalPending, setTotalPending] = useState<number>(0);
+  const [totalDone, setTotalDone] = useState<number>(0);
+
+  const PAGE_SIZE = 10;
 
   useEffect(() => {
-    getDistinctFactories().then(setFactoryOptions);
+    const f = searchParams.get('factory');
+    const l = searchParams.get('line');
+    if (f != null) setFactoryFilter(f || 'all');
+    if (l != null) setLineFilter(l || 'all');
+  }, [searchParams]);
+
+  // Filter factory/line hanya dari repair yang status pending (device error) — yang tidak ada error tidak muncul di pilihan
+  useEffect(() => {
+    getDistinctFactoriesFromRepairs('pending').then(setFactoryOptions);
   }, []);
 
   useEffect(() => {
-    getDistinctLines(factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined).then(setLineOptions);
+    getDistinctLinesFromRepairs(
+      factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined,
+      'pending'
+    ).then(setLineOptions);
   }, [factoryFilter]);
 
-  const loadRepairs = async () => {
-    setLoading(true);
+  useEffect(() => {
+    const factory = factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined;
+    const line = lineFilter && lineFilter !== 'all' ? lineFilter : undefined;
+    getRepairsCount(factory, line).then(({ pending, done }) => {
+      setTotalPending(pending);
+      setTotalDone(done);
+    });
+  }, [factoryFilter, lineFilter]);
+
+  const getStatusFilterForQuery = (): RepairStatusFilter | undefined => {
+    if (completionFilter === 'belum') return 'pending';
+    if (completionFilter === 'done') return ['completed', 'approved'];
+    if (statusFilter && statusFilter !== 'all') return statusFilter as Repair['status'];
+    return undefined;
+  };
+
+  const loadPage = async (pageNum: number) => {
+    if (pageNum === 0) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
+
     try {
+      const statusFilterForQuery = getStatusFilterForQuery();
+      const cursorForPage = pageNum > 0 ? pageCursors[pageNum - 1] ?? undefined : undefined;
       const result = await getRepairs(
         factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined,
-        lineFilter && lineFilter !== 'all' ? lineFilter : undefined
+        lineFilter && lineFilter !== 'all' ? lineFilter : undefined,
+        undefined,
+        undefined,
+        PAGE_SIZE,
+        cursorForPage ?? undefined,
+        statusFilterForQuery
       );
-      
-      let filtered = result.repairs;
-      
-      // Filter by completion status
-      if (completionFilter === 'done') {
-        filtered = filtered.filter(r => r.status === 'completed' || r.status === 'approved');
-      } else if (completionFilter === 'belum') {
-        filtered = filtered.filter(r => r.status === 'pending');
-      }
-      
-      // Filter by repair status
-      if (statusFilter && statusFilter !== 'all') {
-        filtered = filtered.filter(r => r.status === statusFilter);
-      }
-      
-      // Search filter
-      if (searchTerm) {
-        const term = searchTerm.toLowerCase();
-        filtered = filtered.filter(
-          (repair) =>
-            repair.mcid.toLowerCase().includes(term) ||
-            repair.mac_address.toLowerCase().includes(term) ||
-            repair.factory.toLowerCase().includes(term) ||
-            repair.line.toLowerCase().includes(term) ||
-            repair.problem.toLowerCase().includes(term) ||
-            repair.technician_name.toLowerCase().includes(term)
-        );
-      }
-      
-      // Urutkan ascending by line
-      filtered.sort((a, b) => (a.line || '').localeCompare(b.line || '', undefined, { numeric: true }));
-      
-      setRepairs(filtered);
+
+      let list = result.repairs;
+      list.sort((a, b) => (a.line || '').localeCompare(b.line || '', undefined, { numeric: true }));
+
+      setRepairs(list);
+      setLastDoc(result.lastDoc);
+      setHasNextPage(result.repairs.length === PAGE_SIZE);
+      setPageCursors((prev) => {
+        const next = [...prev];
+        next[pageNum] = result.lastDoc ?? null;
+        return next;
+      });
     } catch (error) {
       console.error('Error loading repairs:', error);
+      setRepairs([]);
+      setHasNextPage(false);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
-  const debouncedSearch = debounce(loadRepairs, 300);
+  const goToNextPage = () => {
+    if (!hasNextPage || loadingMore) return;
+    const nextPage = currentPage + 1;
+    setCurrentPage(nextPage);
+    loadPage(nextPage);
+  };
+
+  const goToPrevPage = () => {
+    if (currentPage === 0) return;
+    const prevPage = currentPage - 1;
+    setCurrentPage(prevPage);
+    loadPage(prevPage);
+  };
 
   useEffect(() => {
-    loadRepairs();
+    setCurrentPage(0);
+    setPageCursors([]);
+    loadPage(0);
   }, [factoryFilter, lineFilter, statusFilter, completionFilter]);
 
-  useEffect(() => {
-    debouncedSearch();
-  }, [searchTerm]);
+  const displayRepairs = useMemo(() => {
+    if (!searchTerm.trim()) return repairs;
+    const term = searchTerm.toLowerCase();
+    return repairs.filter(
+      (repair) =>
+        repair.mcid.toLowerCase().includes(term) ||
+        (repair.mac_address || '').toLowerCase().includes(term) ||
+        repair.factory.toLowerCase().includes(term) ||
+        repair.line.toLowerCase().includes(term) ||
+        (repair.problem || '').toLowerCase().includes(term) ||
+        (repair.technician_name || '').toLowerCase().includes(term)
+    );
+  }, [repairs, searchTerm]);
 
   const getStatusBadge = (status: Repair['status']) => {
     switch (status) {
@@ -172,8 +229,8 @@ export default function RepairListPage() {
     }
   };
 
-  const doneCount = repairs.filter(r => r.status === 'completed' || r.status === 'approved').length;
-  const belumCount = repairs.filter(r => r.status === 'pending').length;
+  const doneCount = totalDone;
+  const belumCount = totalPending;
 
   const openEdit = (repair: Repair) => {
     setEditingRepair(repair);
@@ -212,7 +269,9 @@ export default function RepairListPage() {
       toast({ title: 'Berhasil', description: 'Data repair telah diperbarui.' });
       setEditingRepair(null);
       setEditForm({});
-      loadRepairs();
+      setCurrentPage(0);
+          setPageCursors([]);
+          loadPage(0);
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -242,7 +301,9 @@ export default function RepairListPage() {
           ? 'Repair kembali ditampilkan di list error. Device status: repair.'
           : `Device ditandai selesai diperbaiki oleh ${technicianName}. Data tetap tersimpan di Device List.`,
       });
-      loadRepairs();
+      setCurrentPage(0);
+          setPageCursors([]);
+          loadPage(0);
     } catch (error) {
       toast({
         title: 'Error',
@@ -373,7 +434,9 @@ export default function RepairListPage() {
 
           setImportFile(null);
           setShowImportDialog(false);
-          loadRepairs(); // Reload repairs
+          setCurrentPage(0);
+          setPageCursors([]);
+          loadPage(0); // Reload repairs
         },
         error: (error) => {
           toast({
@@ -526,7 +589,7 @@ export default function RepairListPage() {
             </Card>
           ) : (
             <div className="space-y-3 sm:space-y-4">
-              {repairs.map((repair) => (
+              {displayRepairs.map((repair) => (
                 <Card key={repair.id} className="hover:shadow-md transition-shadow overflow-hidden">
                   <CardContent className="p-4 sm:p-6">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3 sm:mb-4">
@@ -587,6 +650,36 @@ export default function RepairListPage() {
                   </CardContent>
                 </Card>
               ))}
+              {displayRepairs.length > 0 && (
+                <div className="flex flex-wrap items-center justify-center gap-3 pt-4 pb-2">
+                  <Button
+                    variant="outline"
+                    onClick={goToPrevPage}
+                    disabled={currentPage === 0 || loadingMore}
+                    size="sm"
+                  >
+                    Halaman sebelumnya
+                  </Button>
+                  <span className="text-sm text-muted-foreground">
+                    Halaman {currentPage + 1}
+                  </span>
+                  <Button
+                    variant="outline"
+                    onClick={goToNextPage}
+                    disabled={!hasNextPage || loadingMore}
+                    size="sm"
+                  >
+                    {loadingMore ? (
+                      <>
+                        <span className="animate-spin rounded-full h-3 w-3 border-2 border-primary border-t-transparent inline-block mr-1.5" />
+                        Memuat...
+                      </>
+                    ) : (
+                      'Halaman selanjutnya'
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 
@@ -776,5 +869,19 @@ export default function RepairListPage() {
         </main>
       </div>
     </ProtectedRoute>
+  );
+}
+
+export default function RepairListPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+        </div>
+      }
+    >
+      <RepairListContent />
+    </Suspense>
   );
 }

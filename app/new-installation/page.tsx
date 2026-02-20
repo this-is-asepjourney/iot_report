@@ -47,7 +47,7 @@ export default function NewInstallationPage() {
       if (isDuplicate) {
         toast({
           title: 'Error',
-          description: 'Device dengan MCID atau MAC Address ini sudah terdaftar',
+          description: 'MCID atau MAC Address sudah terdaftar. Satu MCID = satu mesin jahit.',
           variant: 'destructive',
         });
         setLoading(false);
@@ -112,7 +112,7 @@ export default function NewInstallationPage() {
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <Label htmlFor="mcid">MCID</Label>
+                  <Label htmlFor="mcid">MCID (identitas mesin, unik)</Label>
                   <div className="flex gap-2">
                     <Input
                       id="mcid"
@@ -132,7 +132,7 @@ export default function NewInstallationPage() {
                 </div>
 
                 <div>
-                  <Label htmlFor="mac_address">MAC Address</Label>
+                  <Label htmlFor="mac_address">MAC Address (identitas IoT)</Label>
                   <div className="flex gap-2">
                     <Input
                       id="mac_address"

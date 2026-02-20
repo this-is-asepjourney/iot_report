@@ -147,7 +147,7 @@ export default function RepairPage() {
                             Input Repair
                         </h1>
                         <p className="text-muted-foreground">
-                            Input repair adalah sumber data: isi MCID, Factory, Line (dan opsional MAC). Jika MCID belum ada, device otomatis ditambahkan ke Device List lalu repair dicatat.
+                            MCID = identitas mesin jahit (1 MCID = 1 mesin). Isi MCID, Factory, Line, opsional MAC (identitas IoT). Jika MCID belum ada, device otomatis ditambahkan lalu repair dicatat.
                         </p>
                     </div>
 
@@ -159,7 +159,7 @@ export default function RepairPage() {
                             <form onSubmit={handleSubmit} className="space-y-4">
                                 <div className="flex gap-2">
                                     <div className="flex-1">
-                                        <Label htmlFor="mcid">MCID</Label>
+                                        <Label htmlFor="mcid">MCID (identitas mesin, unik)</Label>
                                         <Input
                                             id="mcid"
                                             value={formData.mcid}
@@ -178,7 +178,7 @@ export default function RepairPage() {
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
-                                        <Label htmlFor="mac_address">MAC Address (opsional)</Label>
+                                        <Label htmlFor="mac_address">MAC Address (identitas IoT, opsional)</Label>
                                         <Input
                                             id="mac_address"
                                             value={formData.mac_address}

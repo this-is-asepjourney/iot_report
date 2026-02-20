@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createDevice } from '@/services/deviceService';
+import { createDeviceIfNotExists } from '@/services/deviceService';
 import { useToast } from '@/components/ui/use-toast';
 import Papa from 'papaparse';
 import { Upload, Download, FileSpreadsheet } from 'lucide-react';
@@ -99,7 +99,7 @@ export default function ImportCSVPage() {
             }
 
             try {
-              await createDevice({
+              const { created } = await createDeviceIfNotExists({
                 mcid,
                 mac_address,
                 factory,
@@ -115,8 +115,8 @@ export default function ImportCSVPage() {
                 mac_address,
                 factory,
                 line,
-                status: 'Berhasil',
-                keterangan: '',
+                status: created ? 'Berhasil' : 'Dilewati',
+                keterangan: created ? '' : 'MCID sudah terdaftar (1 MCID = 1 mesin)',
               });
             } catch (error: unknown) {
               const msg =
@@ -178,7 +178,7 @@ export default function ImportCSVPage() {
             <CardHeader>
               <CardTitle>Import Device dari CSV</CardTitle>
               <CardDescription>
-                Kolom wajib (tidak boleh kosong): <strong>mcid</strong>, <strong>factory</strong>, <strong>line</strong>. Kolom lain (termasuk mac_address) opsional.
+                <strong>MCID</strong> = identitas mesin jahit (wajib, unik — 1 MCID = 1 mesin). <strong>factory</strong>, <strong>line</strong> wajib. <strong>mac_address</strong> (identitas IoT) opsional. Baris dengan MCID yang sudah terdaftar akan dilewati.
               </CardDescription>
             </CardHeader>
             <CardContent>

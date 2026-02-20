@@ -7,9 +7,16 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase/config';
 import { DashboardStats, FactoryStatDetail } from '@/types';
+import { get as cacheGet, set as cacheSet } from '@/utils/clientCache';
 
-/** Statistik dashboard. Tanpa factoryAccess = semua factory (factory baru otomatis ikut). */
+const CACHE_TTL_DASHBOARD_MS = 2 * 60 * 1000; // 2 menit
+
+/** Statistik dashboard. Tanpa factoryAccess = semua factory (factory baru otomatis ikut). Cache 2 menit. */
 export const getDashboardStats = async (factoryAccess?: string[]): Promise<DashboardStats> => {
+  const cacheKey = `dashboard:${factoryAccess?.slice().sort().join(',') ?? 'all'}`;
+  const cached = cacheGet<DashboardStats>(cacheKey);
+  if (cached) return cached;
+
   let devicesQuery = query(collection(db, 'devices'));
   let repairsQuery = query(collection(db, 'repairs'));
 
@@ -110,7 +117,7 @@ export const getDashboardStats = async (factoryAccess?: string[]): Promise<Dashb
       .sort((a, b) => a.line.localeCompare(b.line, undefined, { numeric: true })),
   })).sort((a, b) => a.factory.localeCompare(b.factory));
 
-  return {
+  const result: DashboardStats = {
     totalActive,
     totalBroken,
     totalRepairsThisMonth: repairsThisMonth,
@@ -119,4 +126,6 @@ export const getDashboardStats = async (factoryAccess?: string[]): Promise<Dashb
     lineStatsByFactory,
     factoryDetail,
   };
+  cacheSet(cacheKey, result, CACHE_TTL_DASHBOARD_MS);
+  return result;
 };

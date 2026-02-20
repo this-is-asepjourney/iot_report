@@ -8,8 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "firebase": "npx firebase-tools",
-    "deploy": "npm run build && npx firebase-tools deploy --only hosting",
-    "deploy:hosting": "npm run build && npx firebase-tools deploy --only hosting",
+    "clean": "node scripts/clean-build.js",
+    "deploy": "npm run clean && npm run build && npx firebase-tools deploy --only hosting",
+    "deploy:hosting": "npm run clean && npm run build && npx firebase-tools deploy --only hosting",
     "deploy:functions": "npx firebase-tools deploy --only functions",
     "verify:firebase": "node scripts/verify-firebase-config.js",
     "sync:firebase": "node scripts/sync-firebase.js"

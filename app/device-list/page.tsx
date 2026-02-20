@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { Navbar } from '@/components/Navbar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,9 +14,45 @@ import { Device, DeviceStatus } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { debounce } from '@/lib/utils';
 import { useToast } from '@/components/ui/use-toast';
-import { Search, Pencil, PlusCircle } from 'lucide-react';
+import { Search, Pencil, PlusCircle, Upload, Download, CheckCircle2 } from 'lucide-react';
+import Papa from 'papaparse';
+import { downloadDeviceCSVTemplate } from '@/utils/csvDeviceTemplate';
 
-export default function DeviceListPage() {
+interface DeviceCSVRow {
+  mcid?: string;
+  mac_address?: string;
+  factory?: string;
+  line?: string;
+  status?: string;
+  [key: string]: string | undefined;
+}
+
+function normalizeDeviceRow(raw: Record<string, unknown>): DeviceCSVRow {
+  const get = (key: string, alt?: string) => {
+    const v = raw[key] ?? (alt ? raw[alt] : undefined);
+    return typeof v === 'string' ? v : '';
+  };
+  return {
+    mcid: get('mcid'),
+    mac_address: get('mac_address', 'mac_addre'),
+    factory: get('factory'),
+    line: get('line'),
+    status: get('status'),
+  };
+}
+
+function isDeviceRowEmpty(row: DeviceCSVRow): boolean {
+  return !(row.mcid?.trim() || row.factory?.trim() || row.line?.trim());
+}
+
+function parseDeviceStatus(s: string): DeviceStatus {
+  const v = (s || '').trim().toLowerCase();
+  if (v === 'repair' || v === 'broken') return v;
+  return 'active';
+}
+
+function DeviceListContent() {
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const { toast } = useToast();
   const [devices, setDevices] = useState<Device[]>([]);
@@ -26,6 +63,15 @@ export default function DeviceListPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [factoryOptions, setFactoryOptions] = useState<string[]>([]);
   const [lineOptions, setLineOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    const f = searchParams.get('factory');
+    const l = searchParams.get('line');
+    const s = searchParams.get('status');
+    if (f != null) setFactoryFilter(f || 'all');
+    if (l != null) setLineFilter(l || 'all');
+    if (s != null) setStatusFilter(s || 'all');
+  }, [searchParams]);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [editForm, setEditForm] = useState<{ mcid: string; mac_address: string; factory: string; line: string; status: DeviceStatus }>({
     mcid: '',
@@ -37,6 +83,10 @@ export default function DeviceListPage() {
   const [savingDeviceId, setSavingDeviceId] = useState<string | null>(null);
   const [addForm, setAddForm] = useState({ mcid: '', mac_address: '', factory: '', line: '' });
   const [addingDevice, setAddingDevice] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     getDistinctFactories().then(setFactoryOptions);
@@ -118,7 +168,7 @@ export default function DeviceListPage() {
       if (existing && existing.id !== editingDevice.id) {
         toast({
           title: 'MCID duplikat',
-          description: 'MCID ini sudah dipakai device lain. Tidak bisa duplikat.',
+          description: 'MCID adalah identitas mesin jahit. Satu MCID hanya untuk satu mesin.',
           variant: 'destructive',
         });
         return;
@@ -164,13 +214,13 @@ export default function DeviceListPage() {
         created_at: new Date(),
       });
       if (created) {
-        toast({ title: 'Device ditambahkan', description: 'Data dari list error disimpan. MCID tidak duplikat.' });
+        toast({ title: 'Device ditambahkan', description: 'Data disimpan. MCID unik (1 MCID = 1 mesin).' });
         setAddForm({ mcid: '', mac_address: '', factory: '', line: '' });
         await loadDevices();
       } else {
         toast({
           title: 'Tidak duplikat',
-          description: 'Device dengan MCID ini sudah ada di list. Data tidak disimpan dua kali.',
+          description: 'MCID ini sudah terdaftar (1 MCID = 1 mesin). Data tidak duplikat.',
         });
       }
     } catch (error) {
@@ -185,6 +235,113 @@ export default function DeviceListPage() {
     }
   };
 
+  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setImportFile(file);
+  };
+
+  const BATCH_SIZE = 50;
+
+  const handleImport = async () => {
+    if (!importFile) return;
+
+    setImportLoading(true);
+    setImportProgress(null);
+
+    const yieldToUI = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    try {
+      const results = await new Promise<Papa.ParseResult<Record<string, unknown>>>((resolve, reject) => {
+        Papa.parse<Record<string, unknown>>(importFile, {
+          header: true,
+          complete: (res) => resolve(res),
+          error: (err) => reject(err),
+        });
+      });
+
+      const rawData = (results.data || []) as Record<string, unknown>[];
+      const normalized = rawData.map(normalizeDeviceRow);
+
+      const validRows: { mcid: string; mac_address: string; factory: string; line: string; status: DeviceStatus }[] = [];
+      let skipEmpty = 0;
+      let skipInvalid = 0;
+
+      for (const row of normalized) {
+        if (isDeviceRowEmpty(row)) {
+          skipEmpty++;
+          continue;
+        }
+        const mcid = (row.mcid ?? '').trim();
+        const factory = (row.factory ?? '').trim();
+        const line = (row.line ?? '').trim();
+        if (!mcid || !factory || !line) {
+          skipInvalid++;
+          continue;
+        }
+        validRows.push({
+          mcid,
+          mac_address: (row.mac_address ?? '').trim(),
+          factory,
+          line,
+          status: parseDeviceStatus(row.status ?? 'active'),
+        });
+      }
+
+      const total = validRows.length;
+      setImportProgress({ done: 0, total });
+
+      let successCount = 0;
+      let skipError = 0;
+
+      for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+        const batch = validRows.slice(i, i + BATCH_SIZE);
+        const promises = batch.map((row) =>
+          createDeviceIfNotExists({
+            ...row,
+            mac_address: row.mac_address || '',
+            last_update: new Date(),
+            created_at: new Date(),
+          }).then((r) => r.created).catch(() => {
+            skipError++;
+            return false;
+          })
+        );
+        const batchResults = await Promise.all(promises);
+        successCount += batchResults.filter(Boolean).length;
+        setImportProgress({ done: Math.min(i + BATCH_SIZE, total), total });
+        await yieldToUI();
+      }
+
+      const totalFail = skipEmpty + skipInvalid + skipError;
+      let desc = `Berhasil: ${successCount} device di-import.`;
+      if (totalFail > 0) {
+        desc += ` Dilewati: ${totalFail}`;
+        if (skipInvalid > 0) desc += ` (${skipInvalid} data tidak lengkap)`;
+        if (skipEmpty > 0) desc += ` (${skipEmpty} baris kosong)`;
+        if (skipError > 0) desc += ` (${skipError} error)`;
+        desc += '.';
+      }
+      toast({
+        title: 'Import selesai',
+        description: desc,
+      });
+
+      setImportFile(null);
+      setImportProgress(null);
+      setShowImportDialog(false);
+      await loadDevices();
+    } catch (error: unknown) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Gagal mengimport data',
+        variant: 'destructive',
+      });
+      setImportProgress(null);
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-background">
@@ -195,8 +352,19 @@ export default function DeviceListPage() {
               Device List
             </h1>
             <p className="text-muted-foreground">
-              Data device tidak perlu diisi sekaligus. Anda bisa menyicil: ketika ada data masuk dari list error (misalnya saat import repair), device list akan menyimpan datanya. Satu MCID hanya boleh satu device — tidak bisa duplikat.
+              MCID = identitas mesin jahit (1 MCID = 1 mesin, harus unik). MAC Address = identitas awal perangkat IoT. Data bisa menyicil dari list error atau import; duplikat MCID tidak akan disimpan.
             </p>
+            {(user?.role === 'supervisor' || user?.role === 'admin') && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={() => setShowImportDialog(true)}
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Import CSV
+              </Button>
+            )}
           </div>
 
           {/* Tambah device dari list error */}
@@ -207,7 +375,7 @@ export default function DeviceListPage() {
                 Tambah device dari list error
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Input MCID, Factory, Line (dan opsional MAC). Jika MCID sudah ada, data tidak akan duplikat.
+                Input MCID (identitas mesin, unik), Factory, Line, dan opsional MAC (identitas IoT). MCID yang sudah terdaftar dilewati.
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -218,7 +386,7 @@ export default function DeviceListPage() {
                     id="add-mcid"
                     value={addForm.mcid}
                     onChange={(e) => setAddForm((f) => ({ ...f, mcid: e.target.value }))}
-                    placeholder="MCID (wajib)"
+                    placeholder="MCID (identitas mesin, unik)"
                   />
                 </div>
                 <div className="space-y-2">
@@ -402,6 +570,107 @@ export default function DeviceListPage() {
             </div>
           )}
 
+          {/* Import Dialog */}
+          {showImportDialog && (
+            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+              <Card className="w-full max-w-lg border-2 shadow-lg">
+                <CardHeader className="border-b">
+                  <CardTitle>Import Device dari CSV</CardTitle>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Import data device perangkat IoT dari file CSV
+                  </p>
+                </CardHeader>
+                <CardContent className="pt-6 space-y-4">
+                  <div className="bg-muted/50 p-4 rounded-lg border">
+                    <div className="flex items-center justify-between mb-3">
+                      <Label className="text-sm font-semibold">Download Template CSV</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={downloadDeviceCSVTemplate}
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Download Template
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      MCID = identitas mesin (wajib, unik). Factory, line wajib. mac_address (identitas IoT), status opsional.
+                    </p>
+                    <div className="text-xs font-mono bg-background p-2 rounded border">
+                      mcid, mac_address, factory, line, status
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Satu MCID = satu mesin. Baris dengan MCID yang sudah terdaftar dilewati.
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="import-device-csv">Pilih File CSV untuk Import</Label>
+                    <Input
+                      id="import-device-csv"
+                      type="file"
+                      accept=".csv"
+                      onChange={handleImportFileChange}
+                      className="mt-2"
+                    />
+                    {importFile && (
+                      <p className="text-xs text-green-500 mt-2 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" />
+                        File dipilih: {importFile.name}
+                      </p>
+                    )}
+                  </div>
+
+                  {importProgress && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm text-muted-foreground">
+                        <span>Mengimport...</span>
+                        <span>{importProgress.done} / {importProgress.total}</span>
+                      </div>
+                      <div className="h-2 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary transition-all duration-300"
+                          style={{
+                            width: importProgress.total
+                              ? `${(100 * importProgress.done) / importProgress.total}%`
+                              : '0%',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      onClick={handleImport}
+                      disabled={!importFile || importLoading}
+                      className="flex-1"
+                    >
+                      <Upload className="h-4 w-4 mr-2" />
+                      {importLoading
+                        ? (importProgress
+                            ? `Mengimport... ${importProgress.done}/${importProgress.total}`
+                            : 'Memproses...')
+                        : 'Import Data'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowImportDialog(false);
+                        setImportFile(null);
+                        setImportProgress(null);
+                      }}
+                      disabled={importLoading}
+                    >
+                      Batal
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {/* Dialog Edit Device */}
           {editingDevice && (
             <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
@@ -409,7 +678,7 @@ export default function DeviceListPage() {
                 <CardHeader className="border-b">
                   <CardTitle>Edit Device</CardTitle>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Ubah nilai MCID, MAC Address, Factory, Line, atau Status
+                    MCID = identitas mesin (unik). MAC = identitas IoT. Ubah nilai sesuai kebutuhan.
                   </p>
                 </CardHeader>
                 <CardContent className="pt-6 space-y-4">
@@ -488,5 +757,19 @@ export default function DeviceListPage() {
         </main>
       </div>
     </ProtectedRoute>
+  );
+}
+
+export default function DeviceListPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-background flex items-center justify-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+        </div>
+      }
+    >
+      <DeviceListContent />
+    </Suspense>
   );
 }

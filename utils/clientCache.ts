@@ -26,3 +26,10 @@ export function set<T>(key: string, value: T, ttlMs: number): void {
 export function invalidateAll(): void {
   store.clear();
 }
+
+/** Hapus cache yang key-nya diawali prefix (untuk invalidation selektif, kurangi read). */
+export function invalidateByPrefix(prefix: string): void {
+  for (const key of store.keys()) {
+    if (key.startsWith(prefix)) store.delete(key);
+  }
+}

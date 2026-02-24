@@ -8,7 +8,7 @@ import {
   createDeviceIfNotExistsAdmin,
   updateDeviceStatusAdmin,
 } from '@/services/deviceServiceAdmin';
-import { createRepairAdmin } from '@/services/repairServiceAdmin';
+import { createOrUpdateRepairAdmin } from '@/services/repairServiceAdmin';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
 
       await updateDeviceStatusAdmin(device.id, 'repair');
 
-      await createRepairAdmin({
+      await createOrUpdateRepairAdmin({
         device_id: device.id,
         mcid: row.mcid,
         mac_address: device.mac_address,

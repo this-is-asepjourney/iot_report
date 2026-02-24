@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useRef } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { Navbar } from '@/components/Navbar';
@@ -9,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createRepair } from '@/services/repairService';
+import { createOrUpdateRepairByMCID } from '@/services/repairService';
 import {
   getDeviceByMCID,
   updateDeviceStatus,
@@ -17,7 +18,8 @@ import {
 } from '@/services/deviceService';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/components/ui/use-toast';
-import { Search, List } from 'lucide-react';
+import { uploadToCloudinary, isCloudinaryConfigured } from '@/lib/cloudinary';
+import { Search, List, ImagePlus, X } from 'lucide-react';
 
 export default function RepairPage() {
     const { user } = useAuth();
@@ -32,7 +34,52 @@ export default function RepairPage() {
         problem: '',
         action: '',
     });
+    const [mediaUrls, setMediaUrls] = useState<string[]>([]);
+    const [uploadingMedia, setUploadingMedia] = useState(false);
     const [loading, setLoading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files?.length || !isCloudinaryConfigured()) {
+            if (files?.length && !isCloudinaryConfigured()) {
+                toast({
+                    title: 'Upload media belum aktif',
+                    description: 'Atur NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME dan NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET di .env.local',
+                    variant: 'destructive',
+                });
+            }
+            e.target.value = '';
+            return;
+        }
+        setUploadingMedia(true);
+        const urls: string[] = [];
+        try {
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                if (!file.type.startsWith('image/')) continue;
+                const url = await uploadToCloudinary(file);
+                urls.push(url);
+            }
+            setMediaUrls((prev) => [...prev, ...urls]);
+            if (urls.length > 0) {
+                toast({ title: 'Foto terunggah', description: `${urls.length} foto ditambahkan.` });
+            }
+        } catch (err: unknown) {
+            toast({
+                title: 'Upload gagal',
+                description: err instanceof Error ? err.message : 'Gagal mengunggah foto',
+                variant: 'destructive',
+            });
+        } finally {
+            setUploadingMedia(false);
+            e.target.value = '';
+        }
+    };
+
+    const removeMedia = (index: number) => {
+        setMediaUrls((prev) => prev.filter((_, i) => i !== index));
+    };
 
     /** Opsional: isi otomatis factory/line/mac jika MCID sudah terdaftar. */
     const handleMCIDSearch = async () => {
@@ -95,7 +142,7 @@ export default function RepairPage() {
                 created_at: now,
             });
 
-            await createRepair({
+            const { updated } = await createOrUpdateRepairByMCID({
                 device_id: deviceId,
                 mcid,
                 mac_address: formData.mac_address?.trim() || '',
@@ -106,13 +153,16 @@ export default function RepairPage() {
                 action: formData.action || '',
                 technician_name: user?.name || user?.email || '',
                 status: 'pending',
+                ...(mediaUrls.length > 0 ? { media: mediaUrls } : {}),
             });
 
             await updateDeviceStatus(deviceId, 'repair');
 
             toast({
                 title: 'Berhasil',
-                description: 'Repair ditambahkan. Device otomatis tercatat di Device List bila baru.',
+                description: updated
+                    ? 'Laporan untuk MCID ini diperbarui (overwrite). Tidak ada duplikat di List Error.'
+                    : 'Repair ditambahkan. Device otomatis tercatat di Device List bila baru.',
             });
 
             setFormData({
@@ -124,6 +174,7 @@ export default function RepairPage() {
                 problem: '',
                 action: '',
             });
+            setMediaUrls([]);
 
             router.push('/repair-list');
         } catch (error: any) {
@@ -240,6 +291,62 @@ export default function RepairPage() {
                                         placeholder="Tindakan yang dilakukan (opsional, bisa diisi nanti di List Error)"
                                     />
                                 </div>
+
+                                {isCloudinaryConfigured() && (
+                                    <div>
+                                        <Label>Foto / Media (opsional)</Label>
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            multiple
+                                            className="hidden"
+                                            onChange={handleMediaSelect}
+                                            disabled={uploadingMedia}
+                                        />
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => fileInputRef.current?.click()}
+                                                disabled={uploadingMedia}
+                                            >
+                                                <ImagePlus className="h-4 w-4 mr-2" />
+                                                {uploadingMedia ? 'Mengunggah...' : 'Tambah foto'}
+                                            </Button>
+                                            {mediaUrls.length > 0 && (
+                                                <span className="text-sm text-muted-foreground self-center">
+                                                    {mediaUrls.length} foto
+                                                </span>
+                                            )}
+                                        </div>
+                                        {mediaUrls.length > 0 && (
+                                            <div className="mt-2 flex flex-wrap gap-2">
+                                                {mediaUrls.map((url, i) => (
+                                                    <div key={i} className="relative group rounded-lg overflow-hidden border bg-muted w-20 h-20">
+                                                        <Image
+                                                            src={url}
+                                                            alt={`Foto ${i + 1}`}
+                                                            fill
+                                                            className="object-cover"
+                                                            sizes="80px"
+                                                            unoptimized
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeMedia(i)}
+                                                            className="absolute top-0.5 right-0.5 rounded-full bg-black/60 p-1 text-white opacity-0 group-hover:opacity-100 transition"
+                                                            aria-label="Hapus foto"
+                                                        >
+                                                            <X className="h-3 w-3" />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 <div className="flex gap-2 pt-2">
                                     <Button type="submit" className="flex-1" disabled={loading}>

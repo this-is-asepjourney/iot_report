@@ -11,6 +11,7 @@
 
 import { getApps, initializeApp, cert, applicationDefault, App } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 function getAdminApp(): App {
   if (getApps().length > 0) {
@@ -43,4 +44,9 @@ let _adminDb: ReturnType<typeof getFirestore> | null = null;
 export function getAdminDb(): ReturnType<typeof getFirestore> {
   if (!_adminDb) _adminDb = getFirestore(getAdminApp());
   return _adminDb;
+}
+
+/** Auth Admin untuk verifikasi ID token (mis. di API route). */
+export function getAdminAuth(): ReturnType<typeof getAuth> {
+  return getAuth(getAdminApp());
 }

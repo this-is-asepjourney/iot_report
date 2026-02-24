@@ -13,7 +13,7 @@ import { Activity, AlertTriangle, Wrench, Building2, Filter, ChevronRight } from
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const CHART_COLORS = ['hsl(var(--primary))', '#0ea5e9', '#8b5cf6', '#ec4899', '#f59e0b'];
+const CHART_COLORS = ['hsl(var(--primary))', '#22d3ee', '#38bdf8', '#0ea5e9', '#06b6d4'];
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -161,8 +161,8 @@ export default function DashboardPage() {
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Repair Bulan Ini
                   </CardTitle>
-                  <div className="h-9 w-9 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
-                    <Wrench className="h-4 w-4 text-blue-600" />
+                  <div className="h-9 w-9 rounded-lg bg-primary/20 flex items-center justify-center shrink-0">
+                    <Wrench className="h-4 w-4 text-primary" />
                   </div>
                 </CardHeader>
                 <CardContent>

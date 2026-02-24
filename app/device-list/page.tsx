@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, Suspense, useRef } from 'react';
+import type { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { useSearchParams } from 'next/navigation';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { Navbar } from '@/components/Navbar';
@@ -9,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { searchDevices, getDistinctFactories, getDistinctLines, updateDevice, createDeviceIfNotExists, getDeviceByMCID } from '@/services/deviceService';
+import { searchDevices, getDistinctFactories, getDistinctLines, updateDevice, createDeviceIfNotExists, getDeviceByMCID, DEVICE_LIST_PAGE_SIZE } from '@/services/deviceService';
 import { Device, DeviceStatus } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { debounce } from '@/lib/utils';
@@ -63,6 +64,8 @@ function DeviceListContent() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [factoryOptions, setFactoryOptions] = useState<string[]>([]);
   const [lineOptions, setLineOptions] = useState<string[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
 
   useEffect(() => {
     const f = searchParams.get('factory');
@@ -96,16 +99,24 @@ function DeviceListContent() {
     getDistinctLines(factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined).then(setLineOptions);
   }, [factoryFilter]);
 
-  const loadDevices = async () => {
+  const loadDevices = async (append = false) => {
     setLoading(true);
     try {
       const result = await searchDevices(
         searchTerm,
         factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined,
         lineFilter && lineFilter !== 'all' ? lineFilter : undefined,
-        statusFilter && statusFilter !== 'all' ? (statusFilter as DeviceStatus) : undefined
+        statusFilter && statusFilter !== 'all' ? (statusFilter as DeviceStatus) : undefined,
+        DEVICE_LIST_PAGE_SIZE,
+        append ? lastDocRef.current ?? undefined : undefined
       );
-      setDevices(result.devices);
+      if (append) {
+        setDevices((prev) => [...prev, ...result.devices]);
+      } else {
+        setDevices(result.devices);
+      }
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
     } catch (error) {
       console.error('Error loading devices:', error);
     } finally {
@@ -567,6 +578,17 @@ function DeviceListContent() {
                   );
                 });
               })()}
+              {hasMore && (
+                <div className="flex justify-center pt-6">
+                  <Button
+                    variant="outline"
+                    onClick={() => loadDevices(true)}
+                    disabled={loading}
+                  >
+                    {loading ? 'Memuat...' : 'Muat lebih banyak'}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 

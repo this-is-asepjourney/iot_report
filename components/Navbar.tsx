@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { logout } from '@/lib/firebase/auth';
 import { Button } from '@/components/ui/button';
-import { Home, Wrench, Plus, List, Upload, User, Settings, LogOut, AlertTriangle, Menu, X } from 'lucide-react';
+import { Home, Wrench, Plus, List, Upload, User, Settings, LogOut, AlertTriangle, Menu, X, RefreshCw } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 
 export function Navbar() {
@@ -38,6 +38,7 @@ export function Navbar() {
     { href: '/repair', label: 'Repair', icon: Wrench, roles: ['teknisi', 'supervisor', 'admin'] },
     { href: '/repair-list', label: 'List Error', icon: AlertTriangle, roles: ['teknisi', 'supervisor', 'admin'] },
     { href: '/new-installation', label: 'Install Baru', icon: Plus, roles: ['teknisi', 'supervisor', 'admin'] },
+    { href: '/ganti-iot', label: 'Ganti IoT', icon: RefreshCw, roles: ['supervisor', 'admin'] },
     { href: '/device-list', label: 'Device List', icon: List, roles: ['teknisi', 'supervisor', 'admin'] },
     { href: '/import-csv', label: 'Import CSV', icon: Upload, roles: ['supervisor', 'admin'] },
     { href: '/profile', label: 'Profile', icon: User, roles: ['teknisi', 'supervisor', 'admin'] },
@@ -65,7 +66,7 @@ export function Navbar() {
             >
               {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </Button>
-            <Link href="/dashboard" className="text-lg font-bold truncate" onClick={closeSidebar}>
+            <Link href="/dashboard" className="text-lg font-bold truncate bg-gradient-to-r from-primary to-primary/80 bg-clip-text text-transparent" onClick={closeSidebar}>
               IoT Report
             </Link>
           </div>

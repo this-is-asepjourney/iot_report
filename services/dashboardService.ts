@@ -3,23 +3,89 @@ import {
   getDocs,
   query,
   where,
-  Timestamp,
+  orderBy,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase/config';
 import { DashboardStats, FactoryStatDetail } from '@/types';
 import { get as cacheGet, set as cacheSet } from '@/utils/clientCache';
+import { getAggregationsForDashboard } from '@/services/aggregationService';
 
 const CACHE_TTL_DASHBOARD_MS = 2 * 60 * 1000; // 2 menit
 
-/** Statistik dashboard. Tanpa factoryAccess = semua factory (factory baru otomatis ikut). Cache 2 menit. */
+/** Repairs bulan ini (satu query repairs). */
+async function getRepairsThisMonth(factoryAccess?: string[]) {
+  let repairsQuery = query(collection(db, 'repairs'), orderBy('date', 'desc'));
+  if (factoryAccess?.length) {
+    repairsQuery = query(repairsQuery, where('factory', 'in', factoryAccess));
+  }
+  const snap = await getDocs(repairsQuery);
+  const repairs = snap.docs.map((d) => d.data());
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  let total = 0;
+  const byFactory = new Map<string, number>();
+  repairs.forEach((repair) => {
+    const repairDate = repair.date?.toDate?.();
+    if (!repairDate || repairDate < startOfMonth) return;
+    total += 1;
+    const f = (repair.factory as string) || 'Unknown';
+    byFactory.set(f, (byFactory.get(f) || 0) + 1);
+  });
+  return { total, byFactory };
+}
+
+/** Statistik dashboard. Pakai aggregation (counter doc) jika ada agar tidak query semua device. */
 export const getDashboardStats = async (factoryAccess?: string[]): Promise<DashboardStats> => {
   const cacheKey = `dashboard:${factoryAccess?.slice().sort().join(',') ?? 'all'}`;
   const cached = cacheGet<DashboardStats>(cacheKey);
   if (cached) return cached;
 
+  const [aggs, repairsData] = await Promise.all([
+    getAggregationsForDashboard(),
+    getRepairsThisMonth(factoryAccess),
+  ]);
+
+  const { device: deviceAgg, factories: factoryAggs, lineStats: aggLineStats, lineStatsByFactory: aggLineStatsByFactory } = aggs;
+
+  // Jalan cepat: pakai counter doc (tanpa baca semua device)
+  if (deviceAgg && deviceAgg.total >= 0) {
+    let factoryStats = factoryAggs.map((f) => ({ factory: f.factory, count: f.total }));
+    let factoryDetail: FactoryStatDetail[] = factoryAggs.map((f) => ({
+      factory: f.factory,
+      active: f.active,
+      broken: f.repair + f.broken,
+      totalDevices: f.total,
+      repairsThisMonth: repairsData.byFactory.get(f.factory) || 0,
+    })).sort((a, b) => a.factory.localeCompare(b.factory));
+    let lineStats = aggLineStats;
+    let lineStatsByFactory = aggLineStatsByFactory;
+    if (factoryAccess?.length) {
+      const set = new Set(factoryAccess);
+      factoryStats = factoryStats.filter((f) => set.has(f.factory));
+      factoryDetail = factoryDetail.filter((f) => set.has(f.factory));
+      lineStatsByFactory = lineStatsByFactory.filter((f) => set.has(f.factory));
+      const lineMap = new Map<string, number>();
+      lineStatsByFactory.forEach((f) =>
+        f.lines.forEach((l) => lineMap.set(l.line, (lineMap.get(l.line) ?? 0) + l.count))
+      );
+      lineStats = Array.from(lineMap.entries()).map(([line, count]) => ({ line, count })).sort((a, b) => a.line.localeCompare(b.line, undefined, { numeric: true }));
+    }
+    const result: DashboardStats = {
+      totalActive: deviceAgg.active,
+      totalBroken: deviceAgg.repair + deviceAgg.broken,
+      totalRepairsThisMonth: repairsData.total,
+      factoryStats,
+      lineStats,
+      lineStatsByFactory,
+      factoryDetail,
+    };
+    cacheSet(cacheKey, result, CACHE_TTL_DASHBOARD_MS);
+    return result;
+  }
+
+  // Fallback: aggregation doc belum ada — query devices seperti dulu
   let devicesQuery = query(collection(db, 'devices'));
   let repairsQuery = query(collection(db, 'repairs'));
-
   if (factoryAccess && factoryAccess.length > 0) {
     devicesQuery = query(devicesQuery, where('factory', 'in', factoryAccess));
     repairsQuery = query(repairsQuery, where('factory', 'in', factoryAccess));

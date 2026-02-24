@@ -10,7 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/use-toast';
-import { Users, Building2, Database, Download, Pencil, X, Check, Trash2 } from 'lucide-react';
+import { Users, Building2, Database, Download, Pencil, X, Check, Trash2, RefreshCw } from 'lucide-react';
+import { auth } from '@/lib/firebase/config';
 import { getAllUsers, updateUser } from '@/services/userService';
 import { getDistinctFactories, getDistinctLines, removeDuplicateDevices, type DedupeProgress } from '@/services/deviceService';
 import { exportBackupJson, downloadBlob } from '@/utils/backupExport';
@@ -36,6 +37,8 @@ export default function AdminPage() {
     repairsReassigned: number;
   } | null>(null);
   const [dedupeProgress, setDedupeProgress] = useState<DedupeProgress | null>(null);
+  const [initAggLoading, setInitAggLoading] = useState(false);
+  const [initAggResult, setInitAggResult] = useState<{ total: number; factories: number; lines?: number } | null>(null);
 
   useEffect(() => {
     loadUsers();
@@ -286,10 +289,10 @@ export default function AdminPage() {
           </Card>
 
           {/* Hapus Duplikat Device — hanya admin */}
-          <Card className="mb-8 border-2 border-amber-500/30">
+          <Card className="mb-8 border-2 border-primary/30">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Trash2 className="h-5 w-5 text-amber-600" />
+                <Trash2 className="h-5 w-5 text-primary" />
                 Hapus Duplikat Device
               </CardTitle>
               <CardDescription>
@@ -324,7 +327,7 @@ export default function AdminPage() {
                       </div>
                       <div className="h-2 bg-muted rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-amber-500 transition-all duration-300"
+                          className="h-full bg-primary transition-all duration-300"
                           style={{
                             width: `${((dedupeProgress.current ?? 0) / dedupeProgress.total) * 100}%`,
                           }}
@@ -341,6 +344,69 @@ export default function AdminPage() {
                   <p>Device yang dihapus: {dedupeResult.removedCount}</p>
                   <p>Repair yang dialihkan: {dedupeResult.repairsReassigned}</p>
                 </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Inisialisasi counter device (aggregation) */}
+          <Card className="mb-8 border-2 border-primary/20">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <RefreshCw className="h-5 w-5" />
+                Inisialisasi Counter Device
+              </CardTitle>
+              <CardDescription>
+                Isi ulang dokumen agregasi (total device, active, repair, broken) dari data device saat ini. Jalankan sekali setelah deploy Cloud Functions trigger atau setelah migrasi data. Dashboard akan memakai counter ini agar tidak membaca semua device.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  setInitAggLoading(true);
+                  setInitAggResult(null);
+                  try {
+                    const token = await auth.currentUser?.getIdToken();
+                    const res = await fetch('/api/admin/init-device-aggregation', {
+                      method: 'POST',
+                      headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    });
+                    const text = await res.text();
+                    let data: { error?: string; total?: number; factories?: number; lines?: number } = {};
+                    try {
+                      data = text ? JSON.parse(text) : {};
+                    } catch {
+                      toast({
+                        title: 'Gagal',
+                        description: 'Server mengembalikan respons bukan JSON. Periksa env Firebase Admin (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY) di server dan log konsol.',
+                        variant: 'destructive',
+                      });
+                      return;
+                    }
+                    if (!res.ok) throw new Error(data.error || 'Gagal');
+                    setInitAggResult({ total: data.total ?? 0, factories: data.factories ?? 0, lines: data.lines });
+                    const linesStr = data.lines != null ? `, ${data.lines} line` : '';
+                    toast({ title: 'Berhasil', description: `Counter diisi: ${data.total} device, ${data.factories} factory${linesStr}.` });
+                  } catch (e) {
+                    toast({
+                      title: 'Gagal',
+                      description: e instanceof Error ? e.message : 'Inisialisasi gagal',
+                      variant: 'destructive',
+                    });
+                  } finally {
+                    setInitAggLoading(false);
+                  }
+                }}
+                disabled={initAggLoading}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${initAggLoading ? 'animate-spin' : ''}`} />
+                {initAggLoading ? 'Memproses...' : 'Jalankan inisialisasi'}
+              </Button>
+              {initAggResult && (
+                <p className="text-sm text-muted-foreground">
+                  Terakhir: {initAggResult.total} device, {initAggResult.factories} factory
+                  {initAggResult.lines != null ? `, ${initAggResult.lines} line` : ''}.
+                </p>
               )}
             </CardContent>
           </Card>

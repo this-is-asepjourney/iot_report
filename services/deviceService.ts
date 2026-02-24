@@ -18,7 +18,8 @@ import { db } from '@/lib/firebase/config';
 import { Device, DeviceStatus } from '@/types';
 import { getRepairIdsByDeviceId } from '@/services/repairService';
 import { updateRepair } from '@/services/repairService';
-import { get as cacheGet, set as cacheSet, invalidateAll as cacheInvalidateAll } from '@/utils/clientCache';
+import { get as cacheGet, set as cacheSet, invalidateByPrefix } from '@/utils/clientCache';
+import { invalidateAggregationCache } from '@/services/aggregationService';
 
 const CACHE_TTL_LIST_MS = 1 * 60 * 1000;   // 1 menit untuk list
 const CACHE_TTL_DISTINCT_MS = 5 * 60 * 1000; // 5 menit untuk factory/line
@@ -68,18 +69,21 @@ export const checkDuplicateDevice = async (mcid: string, mac_address: string): P
   return !snap.empty;
 };
 
+/** Default page size untuk list device (kurangi read Firestore). */
+export const DEVICE_LIST_PAGE_SIZE = 50;
+
 export const searchDevices = async (
   searchTerm: string,
   factory?: string,
   line?: string,
   status?: DeviceStatus,
-  pageSize: number = 1000,
+  pageSize: number = DEVICE_LIST_PAGE_SIZE,
   lastDoc?: QueryDocumentSnapshot<DocumentData>
-): Promise<{ devices: Device[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null }> => {
+): Promise<{ devices: Device[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> => {
   // Cache hanya halaman pertama (tanpa lastDoc) untuk kurangi read
   if (!lastDoc) {
     const cacheKey = `searchDevices:${searchTerm}|${factory ?? ''}|${line ?? ''}|${status ?? ''}|${pageSize}`;
-    const cached = cacheGet<{ devices: Device[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null }>(cacheKey);
+    const cached = cacheGet<{ devices: Device[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }>(cacheKey);
     if (cached) return cached;
   }
 
@@ -101,25 +105,28 @@ export const searchDevices = async (
     q = query(q, startAfter(lastDoc));
   }
 
-  // Tingkatkan limit menjadi 1000 agar semua device terambil (Firestore max limit per query)
-  q = query(q, limit(pageSize));
+  // Pagination: baca hanya satu halaman (bukan semua device)
+  q = query(q, limit(pageSize + 1)); // +1 untuk deteksi hasMore
 
   const querySnapshot = await getDocs(q);
-  const devices = querySnapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-    last_update: doc.data().last_update?.toDate(),
-    created_at: doc.data().created_at?.toDate(),
+  const docs = querySnapshot.docs;
+  const hasMore = docs.length > pageSize;
+  const pageDocs = hasMore ? docs.slice(0, pageSize) : docs;
+  const devices = pageDocs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+    last_update: docSnap.data().last_update?.toDate(),
+    created_at: docSnap.data().created_at?.toDate(),
   })) as Device[];
 
-  // Filter by search term if provided
+  // Filter by search term hanya pada halaman saat ini (untuk kurangi read, tidak query full-text)
   let filteredDevices = devices;
   if (searchTerm) {
     const term = searchTerm.toLowerCase();
     filteredDevices = devices.filter(
       (device) =>
         device.mcid.toLowerCase().includes(term) ||
-        device.mac_address.toLowerCase().includes(term) ||
+        (device.mac_address && device.mac_address.toLowerCase().includes(term)) ||
         device.factory.toLowerCase().includes(term) ||
         device.line.toLowerCase().includes(term)
     );
@@ -127,7 +134,8 @@ export const searchDevices = async (
 
   const result = {
     devices: filteredDevices,
-    lastDoc: querySnapshot.docs[querySnapshot.docs.length - 1] || null,
+    lastDoc: pageDocs.length > 0 ? pageDocs[pageDocs.length - 1] : null,
+    hasMore,
   };
   if (!lastDoc) {
     const cacheKey = `searchDevices:${searchTerm}|${factory ?? ''}|${line ?? ''}|${status ?? ''}|${pageSize}`;
@@ -150,7 +158,10 @@ export const createDevice = async (device: Omit<Device, 'id'>): Promise<string> 
     created_at: new Date(),
     last_update: new Date(),
   });
-  cacheInvalidateAll();
+  invalidateByPrefix('searchDevices');
+  invalidateByPrefix('distinctFactories');
+  invalidateByPrefix('distinctLines');
+  invalidateAggregationCache();
   return docRef.id;
 };
 
@@ -184,7 +195,10 @@ export const updateDevice = async (id: string, updates: Partial<Device>): Promis
     ...updates,
     last_update: new Date(),
   });
-  cacheInvalidateAll();
+  invalidateByPrefix('searchDevices');
+  invalidateByPrefix('distinctFactories');
+  invalidateByPrefix('distinctLines');
+  invalidateAggregationCache();
 };
 
 export const updateDeviceStatus = async (id: string, status: DeviceStatus): Promise<void> => {
@@ -326,6 +340,12 @@ export const removeDuplicateDevices = async (
   }
 
   const duplicateCount = totalGroups;
-  cacheInvalidateAll();
+  invalidateByPrefix('searchDevices');
+  invalidateByPrefix('distinctFactories');
+  invalidateByPrefix('distinctLines');
+  invalidateByPrefix('repairs');
+  invalidateByPrefix('pendingRepair:');
+  invalidateByPrefix('dashboard');
+  invalidateAggregationCache();
   return { duplicateCount, removedCount, repairsReassigned };
 };

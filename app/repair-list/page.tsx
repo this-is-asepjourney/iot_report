@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useState, useEffect, useMemo, Suspense, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
@@ -10,20 +10,23 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { getRepairs, getRepairsCount, getDistinctFactoriesFromRepairs, getDistinctLinesFromRepairs, type RepairStatusFilter } from '@/services/repairService';
+import { getRepairs, getDistinctFactoriesFromRepairs, getDistinctLinesFromRepairs, type RepairStatusFilter } from '@/services/repairService';
 import { Repair } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { debounce } from '@/lib/utils';
 import Link from 'next/link';
-import { Search, CheckCircle2, Clock, AlertCircle, Download, Upload, PlusCircle, Pencil } from 'lucide-react';
+import { Search, CheckCircle2, Clock, AlertCircle, Download, Upload, PlusCircle, Pencil, ImagePlus, X } from 'lucide-react';
+import Image from 'next/image';
+import { getRepairMediaUrls, uploadToCloudinary, isCloudinaryConfigured } from '@/lib/cloudinary';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { exportRepairsToCSV } from '@/utils/csvExport';
 import { downloadRepairCSVTemplate } from '@/utils/csvRepairTemplate';
 import { useToast } from '@/components/ui/use-toast';
 import Papa from 'papaparse';
-import { createRepair, updateRepair } from '@/services/repairService';
+import { createOrUpdateRepairByMCID, updateRepair, getRepairsCount } from '@/services/repairService';
 import { getDeviceByMCID, createDevice, updateDeviceStatus } from '@/services/deviceService';
+import { invalidateByPrefix } from '@/utils/clientCache';
 
 /** Kolom wajib saat import repair. problem & action opsional (bisa diisi nanti di web app). */
 const REPAIR_KOLOM_WAJIB = ['mcid', 'factory', 'line'] as const;
@@ -114,11 +117,34 @@ function RepairListContent() {
   useEffect(() => {
     const factory = factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined;
     const line = lineFilter && lineFilter !== 'all' ? lineFilter : undefined;
-    getRepairsCount(factory, line).then(({ pending, done }) => {
-      setTotalPending(pending);
-      setTotalDone(done);
-    });
-  }, [factoryFilter, lineFilter]);
+    getRepairsCount(factory, line)
+      .then(({ pending, done }) => {
+        setTotalPending(pending);
+        setTotalDone(done);
+      })
+      .catch((err) => {
+        console.error('getRepairsCount error:', err);
+        toast({
+          title: 'Gagal memuat jumlah',
+          description: err?.message || 'Pastikan sudah login. Cek koneksi dan izin Firestore.',
+          variant: 'destructive',
+        });
+      });
+  }, [factoryFilter, lineFilter, toast]);
+
+  // Jika list ada item tapi count masih 0,0 (cache count kedaluwarsa/stale), paksa refetch count
+  useEffect(() => {
+    if (repairs.length === 0 || totalPending !== 0 || totalDone !== 0) return;
+    const factory = factoryFilter && factoryFilter !== 'all' ? factoryFilter : undefined;
+    const line = lineFilter && lineFilter !== 'all' ? lineFilter : undefined;
+    invalidateByPrefix('repairsCount');
+    getRepairsCount(factory, line)
+      .then(({ pending, done }) => {
+        setTotalPending(pending);
+        setTotalDone(done);
+      })
+      .catch((err) => console.error('getRepairsCount refetch:', err));
+  }, [repairs.length, totalPending, totalDone, factoryFilter, lineFilter]);
 
   const getStatusFilterForQuery = (): RepairStatusFilter | undefined => {
     if (completionFilter === 'belum') return 'pending';
@@ -232,8 +258,13 @@ function RepairListContent() {
   const doneCount = totalDone;
   const belumCount = totalPending;
 
+  const [editMediaUrls, setEditMediaUrls] = useState<string[]>([]);
+  const [uploadingEditMedia, setUploadingEditMedia] = useState(false);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+
   const openEdit = (repair: Repair) => {
     setEditingRepair(repair);
+    setEditMediaUrls(getRepairMediaUrls(repair));
     setEditForm({
       problem: repair.problem || '',
       action: repair.action || '',
@@ -244,6 +275,31 @@ function RepairListContent() {
       status: repair.status,
       technician_name: repair.technician_name || '',
     });
+  };
+
+  const handleEditMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length || !isCloudinaryConfigured()) {
+      e.target.value = '';
+      return;
+    }
+    setUploadingEditMedia(true);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (!files[i].type.startsWith('image/')) continue;
+        const url = await uploadToCloudinary(files[i]);
+        setEditMediaUrls((prev) => [...prev, url]);
+      }
+    } catch (err: unknown) {
+      toast({
+        title: 'Upload gagal',
+        description: err instanceof Error ? err.message : 'Gagal mengunggah foto',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploadingEditMedia(false);
+      e.target.value = '';
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -259,6 +315,7 @@ function RepairListContent() {
         line: (editForm.line ?? editingRepair.line).trim(),
         status: newStatus,
         technician_name: (editForm.technician_name ?? editingRepair.technician_name) || '',
+        media: editMediaUrls.length > 0 ? editMediaUrls : [],
       };
       const dateVal = editForm.date ?? editingRepair.date;
       if (dateVal) updates.date = dateVal instanceof Date ? dateVal : new Date(dateVal as unknown as string);
@@ -393,7 +450,7 @@ function RepairListContent() {
                 deviceCreatedCount++;
               }
 
-              await createRepair({
+              await createOrUpdateRepairByMCID({
                 device_id: deviceId,
                 mcid,
                 mac_address,
@@ -589,67 +646,90 @@ function RepairListContent() {
             </Card>
           ) : (
             <div className="space-y-3 sm:space-y-4">
-              {displayRepairs.map((repair) => (
+              {displayRepairs.map((repair) => {
+                const mediaUrls = getRepairMediaUrls(repair);
+                const hasMedia = mediaUrls.length > 0;
+                return (
                 <Card key={repair.id} className="hover:shadow-md transition-shadow overflow-hidden">
                   <CardContent className="p-4 sm:p-6">
-                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3 sm:mb-4">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2 mb-1.5 sm:mb-2">
+                    <div className={`grid gap-4 sm:gap-6 ${hasMedia ? 'lg:grid-cols-[1fr,auto] lg:items-start' : ''}`}>
+                      <div className="min-w-0 space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold text-base sm:text-lg break-all">{repair.mcid}</h3>
                           {getStatusBadge(repair.status)}
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-2 gap-x-3 gap-y-1 text-xs sm:text-sm text-muted-foreground">
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs sm:text-sm text-muted-foreground">
                           <div className="truncate" title={repair.mac_address}><span className="font-medium">MAC:</span> <span className="truncate block">{repair.mac_address || '—'}</span></div>
                           <div><span className="font-medium">Factory:</span> {repair.factory}</div>
                           <div><span className="font-medium">Line:</span> {repair.line}</div>
                           <div><span className="font-medium">Tanggal:</span> {format(repair.date, 'dd MMM yyyy')}</div>
                         </div>
-                      </div>
-                    </div>
-                    <div className="space-y-2 mt-3 sm:mt-4 pt-3 sm:pt-4 border-t">
-                      <div>
-                        <span className="text-xs sm:text-sm font-medium text-muted-foreground">Problem:</span>
-                        <p className="text-xs sm:text-sm mt-0.5 break-words">{repair.problem || '—'}</p>
-                      </div>
-                      <div>
-                        <span className="text-xs sm:text-sm font-medium text-muted-foreground">Action:</span>
-                        <p className="text-xs sm:text-sm mt-0.5 break-words">{repair.action || '—'}</p>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
-                        <span className="text-xs text-muted-foreground">Teknisi: {repair.technician_name || '—'}</span>
-                        <span className="text-xs text-muted-foreground">{format(repair.createdAt || repair.date, 'dd/MM/yy HH:mm')}</span>
-                        <div className="flex gap-2 w-full sm:w-auto">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openEdit(repair)}
-                            className="min-w-[72px]"
-                          >
-                            <Pencil className="h-3.5 w-3.5 mr-1 sm:mr-1.5" />
-                            Edit
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={repair.status === 'completed' || repair.status === 'approved' ? 'outline' : 'default'}
-                            onClick={() => handleToggleDoneBelum(repair)}
-                            disabled={updatingRepairId === repair.id}
-                            className="min-w-[80px]"
-                          >
-                            {updatingRepairId === repair.id ? (
-                              <span className="animate-pulse">...</span>
-                            ) : repair.status === 'completed' || repair.status === 'approved' ? (
-                              'Belum'
-                            ) : (
-                              'Done'
-                            )}
-                          </Button>
+                        <div>
+                          <span className="text-xs sm:text-sm font-medium text-muted-foreground">Problem:</span>
+                          <p className="text-xs sm:text-sm mt-0.5 break-words">{repair.problem || '—'}</p>
+                        </div>
+                        <div>
+                          <span className="text-xs sm:text-sm font-medium text-muted-foreground">Action:</span>
+                          <p className="text-xs sm:text-sm mt-0.5 break-words">{repair.action || '—'}</p>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <span className="text-xs text-muted-foreground">Teknisi: {repair.technician_name || '—'}</span>
+                          <span className="text-xs text-muted-foreground">{format(repair.createdAt || repair.date, 'dd/MM/yy HH:mm')}</span>
+                          <div className="flex gap-2 w-full sm:w-auto">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openEdit(repair)}
+                              className="min-w-[72px]"
+                            >
+                              <Pencil className="h-3.5 w-3.5 mr-1 sm:mr-1.5" />
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={repair.status === 'completed' || repair.status === 'approved' ? 'outline' : 'default'}
+                              onClick={() => handleToggleDoneBelum(repair)}
+                              disabled={updatingRepairId === repair.id}
+                              className="min-w-[80px]"
+                            >
+                              {updatingRepairId === repair.id ? (
+                                <span className="animate-pulse">...</span>
+                              ) : repair.status === 'completed' || repair.status === 'approved' ? (
+                                'Belum'
+                              ) : (
+                                'Done'
+                              )}
+                            </Button>
+                          </div>
                         </div>
                       </div>
+                      {hasMedia && (
+                        <div className="flex flex-wrap gap-2 justify-end lg:justify-end">
+                          {mediaUrls.map((url, i) => (
+                            <a
+                              key={i}
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block rounded-lg overflow-hidden border bg-muted w-20 h-20 sm:w-24 sm:h-24 shrink-0 hover:ring-2 hover:ring-primary/50 transition-shadow focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            >
+                              <Image
+                                src={url}
+                                alt={`Foto ${i + 1}`}
+                                width={96}
+                                height={96}
+                                className="object-cover w-full h-full"
+                                unoptimized
+                              />
+                            </a>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
-              ))}
+              );})}
               {displayRepairs.length > 0 && (
                 <div className="flex flex-wrap items-center justify-center gap-3 pt-4 pb-2">
                   <Button
@@ -754,6 +834,56 @@ function RepairListContent() {
                       placeholder="Nama teknisi"
                     />
                   </div>
+                  {isCloudinaryConfigured() && (
+                    <div>
+                      <Label>Foto / Media</Label>
+                      <input
+                        ref={editFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={handleEditMediaSelect}
+                        disabled={uploadingEditMedia}
+                      />
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => editFileInputRef.current?.click()}
+                          disabled={uploadingEditMedia}
+                        >
+                          <ImagePlus className="h-4 w-4 mr-2" />
+                          {uploadingEditMedia ? 'Mengunggah...' : 'Tambah foto'}
+                        </Button>
+                      </div>
+                      {editMediaUrls.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {editMediaUrls.map((url, i) => (
+                            <div key={i} className="relative group rounded-lg overflow-hidden border bg-muted w-16 h-16">
+                              <Image
+                                src={url}
+                                alt={`Foto ${i + 1}`}
+                                fill
+                                className="object-cover"
+                                sizes="64px"
+                                unoptimized
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setEditMediaUrls((prev) => prev.filter((_, idx) => idx !== i))}
+                                className="absolute top-0.5 right-0.5 rounded-full bg-black/60 p-1 text-white opacity-0 group-hover:opacity-100 transition"
+                                aria-label="Hapus foto"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div>
                     <Label>Status</Label>
                     <Select

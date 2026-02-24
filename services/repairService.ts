@@ -17,10 +17,11 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase/config';
 import { Repair } from '@/types';
-import { get as cacheGet, set as cacheSet, invalidateAll as cacheInvalidateAll } from '@/utils/clientCache';
+import { get as cacheGet, set as cacheSet, invalidateAll as cacheInvalidateAll, invalidateByPrefix } from '@/utils/clientCache';
 
-const CACHE_TTL_COUNT_MS = 2 * 60 * 1000;  // 2 menit
+const CACHE_TTL_COUNT_MS = 1 * 60 * 1000;  // 1 menit (sinkron dengan list agar count tidak ketinggalan)
 const CACHE_TTL_LIST_MS = 1 * 60 * 1000;   // 1 menit
+const CACHE_TTL_PENDING_REPAIR_MS = 30 * 1000; // 30 detik untuk getPendingRepairByMCID
 
 /** Total count Belum (pending) dan Done (completed+approved). Cache 2 menit. */
 export const getRepairsCount = async (
@@ -144,19 +145,78 @@ export const getRepairs = async (
   return result;
 };
 
+/** Mengambil repair pending terbaru untuk MCID (untuk overwrite duplicate). Cache 30 detik bila ketemu. */
+export const getPendingRepairByMCID = async (mcid: string): Promise<Repair | null> => {
+  const key = (mcid || '').trim();
+  if (!key) return null;
+  const cacheKey = `pendingRepair:${key}`;
+  const cached = cacheGet<Repair>(cacheKey);
+  if (cached) return cached;
+
+  const q = query(
+    collection(db, 'repairs'),
+    where('mcid', '==', key),
+    where('status', '==', 'pending'),
+    orderBy('date', 'desc'),
+    limit(1)
+  );
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  const data = d.data();
+  const repair = {
+    id: d.id,
+    ...data,
+    date: data.date?.toDate(),
+    createdAt: data.createdAt?.toDate(),
+  } as Repair;
+  cacheSet(cacheKey, repair, CACHE_TTL_PENDING_REPAIR_MS);
+  return repair;
+};
+
+/** Buat repair baru atau update repair pending yang sudah ada untuk MCID yang sama (Opsi A: overwrite). */
+export const createOrUpdateRepairByMCID = async (
+  repair: Omit<Repair, 'id' | 'createdAt'>
+): Promise<{ id: string; updated: boolean }> => {
+  const existing = await getPendingRepairByMCID(repair.mcid);
+  if (existing) {
+    const updates: Partial<Repair> = {
+      device_id: repair.device_id,
+      mcid: repair.mcid,
+      mac_address: repair.mac_address,
+      factory: repair.factory,
+      line: repair.line,
+      date: repair.date,
+      problem: repair.problem,
+      action: repair.action,
+      technician_name: repair.technician_name,
+      status: repair.status,
+    };
+    if (repair.media !== undefined) updates.media = repair.media;
+    await updateRepair(existing.id, updates);
+    return { id: existing.id, updated: true };
+  }
+  const id = await createRepair(repair);
+  return { id, updated: false };
+};
+
 export const createRepair = async (repair: Omit<Repair, 'id' | 'createdAt'>): Promise<string> => {
   const docRef = await addDoc(collection(db, 'repairs'), {
     ...repair,
     createdAt: new Date(),
   });
-  cacheInvalidateAll();
+  invalidateByPrefix('repairs');
+  invalidateByPrefix('pendingRepair:');
+  invalidateByPrefix('dashboard');
   return docRef.id;
 };
 
 export const updateRepair = async (id: string, updates: Partial<Repair>): Promise<void> => {
   const docRef = doc(db, 'repairs', id);
   await updateDoc(docRef, updates);
-  cacheInvalidateAll();
+  invalidateByPrefix('repairs');
+  invalidateByPrefix('pendingRepair:');
+  invalidateByPrefix('dashboard');
 };
 
 /** Daftar repair yang mengacu ke device_id tertentu (untuk migrasi saat hapus duplikat device). */

@@ -33,7 +33,10 @@ export interface Repair {
     problem: string;
     action: string;
     technician_name: string;
+    /** @deprecated Gunakan media[]. Tetap didukung untuk data lama. */
     photo_url?: string;
+    /** Daftar URL foto/media repair (Cloudinary). */
+    media?: string[];
     status: 'pending' | 'completed' | 'approved';
     createdAt?: Date;
 }
@@ -45,6 +48,20 @@ export interface Installation {
     factory: string;
     line: string;
     date_install: Date;
+    technician: string;
+    createdAt?: Date;
+}
+
+/** Riwayat ganti IoT: device lama (mcid_old, mac_old opsional) diganti dengan data baru. */
+export interface Replacement {
+    id: string;
+    mcid_old: string;
+    mac_old?: string;
+    mcid_new: string;
+    mac_address_new: string;
+    factory: string;
+    line: string;
+    date_replace: Date;
     technician: string;
     createdAt?: Date;
 }

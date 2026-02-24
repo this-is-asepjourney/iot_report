@@ -1,16 +1,22 @@
 /**
  * Firebase Cloud Functions — Telegram Webhook untuk IoT Report.
  * Dipanggil oleh Telegram Bot API saat ada pesan; parse laporan, buat device/repair di Firestore, balas ke chat.
+ * Juga: trigger Firestore untuk device aggregation (counter doc) agar dashboard tidak perlu baca semua device.
  *
  * Env: TELEGRAM_BOT_TOKEN (via defineString / .env)
  */
 
 import { onRequest } from 'firebase-functions/v2/https';
+import {
+  onDocumentCreated,
+  onDocumentUpdated,
+  onDocumentDeleted,
+} from 'firebase-functions/v2/firestore';
 import { defineString } from 'firebase-functions/params';
 
 const REGION = 'asia-southeast2';
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 const TELEGRAM_BOT_TOKEN = defineString('TELEGRAM_BOT_TOKEN');
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -18,6 +24,252 @@ const TELEGRAM_API = 'https://api.telegram.org';
 // Firebase Admin (default credentials di Cloud Functions)
 initializeApp();
 const db = getFirestore();
+
+// --- Device aggregation (counter doc): kurangi read di dashboard ---
+const AGGREGATIONS = 'aggregations';
+const DEVICES_AGG_DOC = 'devices';
+const FACTORY_PREFIX = 'factory_';
+const LINE_PREFIX = 'line_';
+
+/** Doc ID aman untuk factory/line (Firestore doc id tidak boleh ada /). */
+function safeFactoryId(factory) {
+  if (typeof factory !== 'string' || !factory.trim()) return 'Unknown';
+  return factory.trim().replace(/\//g, '_');
+}
+
+function safeLineId(line) {
+  if (typeof line !== 'string' || !line.trim()) return 'Unknown';
+  return line.trim().replace(/\//g, '_');
+}
+
+function getStatusField(status) {
+  const s = status === 'repair' || status === 'broken' ? status : 'active';
+  return s;
+}
+
+function factoryDocId(factory) {
+  return FACTORY_PREFIX + safeFactoryId(factory);
+}
+
+function lineDocId(factory, line) {
+  return LINE_PREFIX + safeFactoryId(factory) + '_' + safeLineId(line);
+}
+
+/** Increment global + by_factory saat device dibuat. */
+export const onDeviceCreated = onDocumentCreated(
+  { document: 'devices/{deviceId}', region: REGION },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const data = snap.data();
+    const status = getStatusField(data?.status);
+    const fid = factoryDocId(data?.factory);
+
+    const batch = db.batch();
+    const globalRef = db.collection(AGGREGATIONS).doc(DEVICES_AGG_DOC);
+    batch.set(
+      globalRef,
+      {
+        total: FieldValue.increment(1),
+        [status]: FieldValue.increment(1),
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const factoryRef = db.collection(AGGREGATIONS).doc(fid);
+    const factoryName = (data?.factory && typeof data.factory === 'string') ? data.factory.trim() : 'Unknown';
+    const lineName = (data?.line && typeof data.line === 'string') ? data.line.trim() : 'Unknown';
+    batch.set(
+      factoryRef,
+      {
+        total: FieldValue.increment(1),
+        [status]: FieldValue.increment(1),
+        name: factoryName,
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const lid = lineDocId(data?.factory, data?.line);
+    const lineRef = db.collection(AGGREGATIONS).doc(lid);
+    batch.set(
+      lineRef,
+      {
+        total: FieldValue.increment(1),
+        [status]: FieldValue.increment(1),
+        factoryName,
+        lineName,
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await batch.commit();
+  }
+);
+
+/** Update counter saat status/factory/line berubah. */
+export const onDeviceUpdated = onDocumentUpdated(
+  { document: 'devices/{deviceId}', region: REGION },
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!before || !after) return;
+
+    const oldStatus = getStatusField(before.status);
+    const newStatus = getStatusField(after.status);
+    const oldFactoryId = factoryDocId(before.factory);
+    const newFactoryId = factoryDocId(after.factory);
+    const oldLineId = lineDocId(before.factory, before.line);
+    const newLineId = lineDocId(after.factory, after.line);
+    const statusChanged = oldStatus !== newStatus;
+    const factoryChanged = oldFactoryId !== newFactoryId;
+    const lineChanged = oldLineId !== newLineId;
+
+    if (!statusChanged && !factoryChanged && !lineChanged) return;
+
+    const batch = db.batch();
+    const globalRef = db.collection(AGGREGATIONS).doc(DEVICES_AGG_DOC);
+
+    if (statusChanged) {
+      batch.set(
+        globalRef,
+        {
+          [oldStatus]: FieldValue.increment(-1),
+          [newStatus]: FieldValue.increment(1),
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    if (factoryChanged) {
+      const oldFactoryRef = db.collection(AGGREGATIONS).doc(oldFactoryId);
+      const newFactoryRef = db.collection(AGGREGATIONS).doc(newFactoryId);
+      batch.set(
+        oldFactoryRef,
+        {
+          total: FieldValue.increment(-1),
+          [oldStatus]: FieldValue.increment(-1),
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      const newFactoryName = (after.factory && typeof after.factory === 'string') ? after.factory.trim() : 'Unknown';
+      batch.set(
+        newFactoryRef,
+        {
+          total: FieldValue.increment(1),
+          [newStatus]: FieldValue.increment(1),
+          name: newFactoryName,
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } else if (statusChanged) {
+      const factoryRef = db.collection(AGGREGATIONS).doc(newFactoryId);
+      batch.set(
+        factoryRef,
+        {
+          [oldStatus]: FieldValue.increment(-1),
+          [newStatus]: FieldValue.increment(1),
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    if (lineChanged || factoryChanged) {
+      const oldLineRef = db.collection(AGGREGATIONS).doc(oldLineId);
+      const newLineRef = db.collection(AGGREGATIONS).doc(newLineId);
+      batch.set(
+        oldLineRef,
+        {
+          total: FieldValue.increment(-1),
+          [oldStatus]: FieldValue.increment(-1),
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      const newFactoryName = (after.factory && typeof after.factory === 'string') ? after.factory.trim() : 'Unknown';
+      const newLineName = (after.line && typeof after.line === 'string') ? after.line.trim() : 'Unknown';
+      batch.set(
+        newLineRef,
+        {
+          total: FieldValue.increment(1),
+          [newStatus]: FieldValue.increment(1),
+          factoryName: newFactoryName,
+          lineName: newLineName,
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } else if (statusChanged) {
+      const newLineRef = db.collection(AGGREGATIONS).doc(newLineId);
+      batch.set(
+        newLineRef,
+        {
+          [oldStatus]: FieldValue.increment(-1),
+          [newStatus]: FieldValue.increment(1),
+          lastUpdated: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    await batch.commit();
+  }
+);
+
+/** Decrement saat device dihapus. */
+export const onDeviceDeleted = onDocumentDeleted(
+  { document: 'devices/{deviceId}', region: REGION },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const data = snap.data();
+    const status = getStatusField(data?.status);
+    const fid = factoryDocId(data?.factory);
+    const lid = lineDocId(data?.factory, data?.line);
+
+    const batch = db.batch();
+    const globalRef = db.collection(AGGREGATIONS).doc(DEVICES_AGG_DOC);
+    batch.set(
+      globalRef,
+      {
+        total: FieldValue.increment(-1),
+        [status]: FieldValue.increment(-1),
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const factoryRef = db.collection(AGGREGATIONS).doc(fid);
+    batch.set(
+      factoryRef,
+      {
+        total: FieldValue.increment(-1),
+        [status]: FieldValue.increment(-1),
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const lineRef = db.collection(AGGREGATIONS).doc(lid);
+    batch.set(
+      lineRef,
+      {
+        total: FieldValue.increment(-1),
+        [status]: FieldValue.increment(-1),
+        lastUpdated: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await batch.commit();
+  }
+);
 
 // --- Helpers (sesuai lib/telegram & services di Next.js) ---
 
@@ -175,12 +427,46 @@ async function updateDeviceStatus(deviceId, status) {
   });
 }
 
+/** Ambil repair pending terbaru untuk MCID (overwrite duplicate). */
+async function getPendingRepairByMCID(mcid) {
+  const snap = await db
+    .collection(REPAIRS)
+    .where('mcid', '==', (mcid || '').trim())
+    .where('status', '==', 'pending')
+    .orderBy('date', 'desc')
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+  return { id: snap.docs[0].id };
+}
+
 async function createRepair(input) {
   const docRef = await db.collection(REPAIRS).add({
     ...input,
     createdAt: new Date(),
   });
   return docRef.id;
+}
+
+/** Buat repair baru atau update repair pending untuk MCID yang sama. */
+async function createOrUpdateRepair(input) {
+  const existing = await getPendingRepairByMCID(input.mcid);
+  if (existing) {
+    await db.collection(REPAIRS).doc(existing.id).update({
+      device_id: input.device_id,
+      mcid: input.mcid,
+      mac_address: input.mac_address,
+      factory: input.factory,
+      line: input.line,
+      date: input.date,
+      problem: input.problem,
+      action: input.action,
+      technician_name: input.technician_name,
+      status: input.status,
+    });
+    return existing.id;
+  }
+  return createRepair(input);
 }
 
 // --- HTTP handler ---
@@ -263,7 +549,7 @@ export const telegramWebhook = onRequest(
 
       await updateDeviceStatus(device.id, 'repair');
 
-      await createRepair({
+      await createOrUpdateRepair({
         device_id: device.id,
         mcid: row.mcid,
         mac_address: device.mac_address,
@@ -296,4 +582,4 @@ export const telegramWebhook = onRequest(
     created: result.created,
     errors: result.errors.length,
   }
-);
+);})

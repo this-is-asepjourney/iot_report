@@ -89,6 +89,42 @@
       ]
     },
     {
+      "collectionGroup": "repairs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "mcid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "repairs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "factory",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "line",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "installations",
       "queryScope": "COLLECTION",
       "fields": [

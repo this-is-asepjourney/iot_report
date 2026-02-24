@@ -12,6 +12,7 @@
       {"source": "/admin", "destination": "/admin.html"},
       {"source": "/dashboard", "destination": "/dashboard.html"},
       {"source": "/device-list", "destination": "/device-list.html"},
+      {"source": "/ganti-iot", "destination": "/ganti-iot.html"},
       {"source": "/import-csv", "destination": "/import-csv.html"},
       {"source": "/login", "destination": "/login.html"},
       {"source": "/new-installation", "destination": "/new-installation.html"},
